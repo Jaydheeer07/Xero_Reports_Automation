@@ -55,9 +55,11 @@ SELECTORS = {
     
     # Navigation
     "nav_reports": [
+        'button:has-text("Reporting")',  # From codegen: get_by_role("button", name="Reporting")
+        'text=Reporting',
+        'a:has-text("Reporting")',
         'text=Reports',
         'a:has-text("Reports")',
-        'nav >> text=Reports',
         '[data-testid="nav-reports"]',
     ],
     
@@ -104,9 +106,15 @@ SELECTORS = {
     ],
     
     "export_button": [
-        'button:has-text("Export")',
+        'button:has-text("Export")',  # From codegen
         '[data-testid="export-button"]',
         'button[aria-label*="Export"]',
+    ],
+    
+    "excel_radio": [
+        'input[type="radio"]:has-text("Excel")',  # From codegen: radio button
+        '[role="radio"][name*="Excel"]',
+        'label:has-text("Excel")',
     ],
     
     "more_button": [
@@ -124,9 +132,24 @@ SELECTORS = {
     
     # Activity Statement specific
     "activity_statement_link": [
+        'a:has-text("Activity Statement"):not(:has-text("Activity Statement Summary"))',  # From codegen: exact match
         'text=Activity Statement',
         'a:has-text("Activity Statement")',
         '[data-testid="activity-statement"]',
+    ],
+    
+    "create_new_statement": [
+        'button:has-text("Create new statement")',  # From codegen: exact match
+        'button:has-text("Create statement")',
+        'text=Create new statement',
+        '[data-testid="create-statement"]',
+    ],
+    
+    "period_button": [
+        # From codegen: periods are buttons, not dropdown options
+        # Format: "October 2025 PAYG W" or similar
+        'button:has-text("PAYG W")',
+        'button[role="button"]',
     ],
     
     "draft_statement": [
@@ -156,10 +179,10 @@ class XeroAutomation:
     - Downloading Payroll Activity Summaries
     """
     
-    def __init__(self, browser_manager: BrowserManager):
+    def __init__(self, browser_manager: BrowserManager, debug_screenshots: bool = True):
         self.browser = browser_manager
         self.file_manager = get_file_manager()
-        self._debug_screenshots = False
+        self._debug_screenshots = debug_screenshots  # Enable by default for troubleshooting
     
     @property
     def page(self) -> Page:
@@ -318,14 +341,54 @@ class XeroAutomation:
             }
     
     async def _get_current_tenant_name(self) -> Optional[str]:
-        """Get the name of the currently selected tenant."""
+        """
+        Get the name of the currently selected tenant.
+        
+        Uses multiple strategies:
+        1. Page title (e.g., "Homepage – Marsill Pty Ltd – Xero")
+        2. URL shortcode pattern
+        3. Org switcher element (fallback)
+        """
         try:
-            element = await self._find_element("org_switcher", timeout=5000)
-            if element:
-                text = await element.text_content()
-                return text.strip() if text else None
-        except Exception:
-            pass
+            # Strategy 1: Extract from page title
+            # Title format: "Page Name – Tenant Name – Xero"
+            # Note: Xero uses en-dash (–) not hyphen (-)
+            title = await self.page.title()
+            logger.info(f"Page title: {title}")
+            
+            if title and "Xero" in title:
+                # Try splitting by en-dash first, then regular dash
+                for separator in [" – ", " - ", "–", "-"]:
+                    if separator in title:
+                        parts = title.split(separator)
+                        logger.debug(f"Title parts with '{separator}': {parts}")
+                        if len(parts) >= 3:
+                            tenant_name = parts[-2].strip()  # Second to last part
+                            if tenant_name and tenant_name != "Xero":
+                                logger.info(f"Got tenant from title: {tenant_name}")
+                                return tenant_name
+                        elif len(parts) == 2:
+                            # Format might be "Tenant Name – Xero"
+                            tenant_name = parts[0].strip()
+                            if tenant_name and tenant_name != "Xero":
+                                logger.info(f"Got tenant from title (2 parts): {tenant_name}")
+                                return tenant_name
+                        break  # Only try the first matching separator
+            
+            # Strategy 2: Try org switcher element (with short timeout)
+            try:
+                element = await self._find_element("org_switcher", timeout=3000)
+                if element:
+                    text = await element.text_content()
+                    if text:
+                        logger.info(f"Got tenant from org_switcher: {text.strip()}")
+                        return text.strip()
+            except Exception:
+                pass  # Ignore org_switcher failures
+                    
+        except Exception as e:
+            logger.warning(f"Error getting current tenant name: {e}")
+        
         return None
     
     async def download_payroll_activity_summary(
@@ -430,52 +493,100 @@ class XeroAutomation:
     async def download_activity_statement(
         self,
         tenant_name: str,
-        find_unfiled: bool = True
+        find_unfiled: bool = True,
+        period: str = "October 2025"
     ) -> dict:
         """
         Download the Activity Statement (BAS Report).
         
+        Workflow:
+        1. Click "Reporting" on navbar
+        2. Click "Activity Statement"
+        3. Click "Create new statement" button
+        4. Select the period (e.g., October 2025) from dropdown
+        5. Download the statement
+        
         Args:
             tenant_name: Name of the tenant (for file naming)
             find_unfiled: If True, look for draft/unfiled statements
+            period: Period to select (e.g., "October 2025")
             
         Returns:
             Dict with success status and file path
         """
         try:
-            logger.info(f"Downloading Activity Statement for {tenant_name}")
+            logger.info(f"Downloading Activity Statement for {tenant_name}, period: {period}")
+            
+            # Navigate to Xero homepage first to ensure we're on the right page
+            # Use the homepage URL pattern from codegen: /app/{shortcode}/homepage
+            current_url = self.page.url
+            logger.info(f"Current URL: {current_url}")
+            
+            # If not on Xero, navigate to dashboard
+            if "xero.com" not in current_url:
+                await self.page.goto(XERO_URLS["dashboard"], wait_until="domcontentloaded", timeout=60000)
+            
+            # Wait for the page to fully load - Xero is a heavy SPA
+            # Use try/except for networkidle as it may timeout on heavy SPAs
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                logger.debug("networkidle timeout, continuing anyway...")
+            await asyncio.sleep(3)  # Extra time for JavaScript to render navigation
             
             await self._take_debug_screenshot("activity_start")
             
-            # Navigate to Reports
-            await self.page.goto(XERO_URLS["reports"], wait_until="networkidle")
+            # Step 1: Click "Reporting" on navbar
+            # Xero uses a navigation bar that loads dynamically
+            reporting_clicked = await self._click_reporting_nav()
+            
+            if not reporting_clicked:
+                screenshot = await self.browser.take_screenshot("reporting_nav_not_found")
+                return {
+                    "success": False,
+                    "error": "Could not find Reporting navigation link",
+                    "screenshot": screenshot
+                }
+            
+            # Wait for dropdown/menu to appear after clicking Reporting
             await asyncio.sleep(2)
+            await self._take_debug_screenshot("reporting_menu_opened")
             
-            # Search for Activity Statement
-            search_input = await self._find_element("report_search", timeout=10000)
-            if not search_input:
-                search_input = await self._find_element("search_input", timeout=5000)
+            # Step 2: Click "Activity Statement" link in the dropdown
+            activity_clicked = await self._click_activity_statement_link()
             
-            if search_input:
-                await search_input.fill("Activity Statement")
-                await asyncio.sleep(1)
+            if not activity_clicked:
+                screenshot = await self.browser.take_screenshot("activity_statement_not_found")
+                return {
+                    "success": False,
+                    "error": "Could not find Activity Statement link",
+                    "screenshot": screenshot
+                }
             
-            # Click on Activity Statement
-            if not await self._click_element("activity_statement_link", timeout=10000):
-                try:
-                    await self.page.click('text=Activity Statement', timeout=10000)
-                except PlaywrightTimeout:
-                    screenshot = await self.browser.take_screenshot("activity_statement_not_found")
-                    return {
-                        "success": False,
-                        "error": "Could not find Activity Statement report",
-                        "screenshot": screenshot
-                    }
-            
-            await self.page.wait_for_load_state("networkidle")
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                logger.debug("networkidle timeout after Activity Statement click, continuing...")
             await asyncio.sleep(2)
-            
             await self._take_debug_screenshot("activity_statement_page")
+            
+            # Step 3: Click "Create new statement" button
+            create_clicked = await self._click_create_new_statement()
+            if not create_clicked:
+                logger.warning("Could not find 'Create new statement' button, trying to proceed anyway")
+                await self._take_debug_screenshot("no_create_button")
+            else:
+                await asyncio.sleep(2)
+                await self._take_debug_screenshot("create_button_clicked")
+            
+            # Step 4: Click the period button (e.g., "October 2025 PAYG W")
+            period_clicked = await self._click_period_button(period)
+            if not period_clicked:
+                logger.warning(f"Could not find period button for: {period}")
+                await self._take_debug_screenshot("period_not_found")
+            else:
+                await asyncio.sleep(1)
+                await self._take_debug_screenshot("period_selected")
             
             # If looking for unfiled, try to find draft/unfiled statement
             if find_unfiled:
@@ -485,7 +596,7 @@ class XeroAutomation:
                     await asyncio.sleep(2)
                     await self._take_debug_screenshot("draft_statement_selected")
             
-            # Export to Excel
+            # Step 5: Export to Excel
             file_path = await self._export_to_excel(
                 report_type="activity_statement",
                 tenant_name=tenant_name
@@ -497,7 +608,8 @@ class XeroAutomation:
                     "file_path": file_path,
                     "file_name": os.path.basename(file_path),
                     "tenant_name": tenant_name,
-                    "report_type": "activity_statement"
+                    "report_type": "activity_statement",
+                    "period": period
                 }
             else:
                 screenshot = await self.browser.take_screenshot("activity_export_failed")
@@ -516,9 +628,311 @@ class XeroAutomation:
                 "screenshot": screenshot
             }
     
+    async def _click_reporting_nav(self) -> bool:
+        """
+        Click the Reporting button in the navigation bar.
+        Uses multiple strategies to handle Xero's dynamic SPA.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click Reporting navigation button")
+        
+        # Strategy 1: Use get_by_role with exact match (from codegen)
+        try:
+            reporting_btn = self.page.get_by_role("button", name="Reporting")
+            # Wait for the button to be visible
+            await reporting_btn.wait_for(state="visible", timeout=15000)
+            # Scroll into view if needed
+            await reporting_btn.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)  # Brief pause after scroll
+            await reporting_btn.click(timeout=5000)
+            logger.info("Clicked Reporting button using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 (get_by_role button) failed: {e}")
+        
+        # Strategy 2: Try as a link instead of button
+        try:
+            reporting_link = self.page.get_by_role("link", name="Reporting")
+            await reporting_link.wait_for(state="visible", timeout=10000)
+            await reporting_link.scroll_into_view_if_needed()
+            await reporting_link.click(timeout=5000)
+            logger.info("Clicked Reporting link using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 (get_by_role link) failed: {e}")
+        
+        # Strategy 3: Use locator with text content
+        try:
+            reporting_locator = self.page.locator('button:has-text("Reporting"), [role="button"]:has-text("Reporting")')
+            await reporting_locator.first.wait_for(state="visible", timeout=10000)
+            await reporting_locator.first.scroll_into_view_if_needed()
+            await reporting_locator.first.click(timeout=5000)
+            logger.info("Clicked Reporting using locator with has-text")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 (locator has-text) failed: {e}")
+        
+        # Strategy 4: Try clicking by text with force option
+        try:
+            await self.page.locator('text=Reporting').first.click(force=True, timeout=10000)
+            logger.info("Clicked Reporting using text locator with force")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 (text with force) failed: {e}")
+        
+        # Strategy 5: Find in navigation area specifically
+        try:
+            nav_area = self.page.locator('nav, header, [role="navigation"]')
+            reporting_in_nav = nav_area.get_by_text("Reporting", exact=True)
+            await reporting_in_nav.first.click(timeout=10000)
+            logger.info("Clicked Reporting in navigation area")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 5 (nav area) failed: {e}")
+        
+        # Strategy 6: Use JavaScript click as last resort
+        try:
+            clicked = await self.page.evaluate('''
+                () => {
+                    const elements = document.querySelectorAll('button, a, [role="button"], [role="menuitem"]');
+                    for (const el of elements) {
+                        if (el.textContent && el.textContent.trim().includes('Reporting')) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            if clicked:
+                logger.info("Clicked Reporting using JavaScript evaluation")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 6 (JS click) failed: {e}")
+        
+        logger.error("All strategies to click Reporting button failed")
+        return False
+    
+    async def _click_activity_statement_link(self) -> bool:
+        """
+        Click the Activity Statement link in the Reporting dropdown.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click Activity Statement link")
+        
+        # Strategy 1: Use get_by_role with exact match (from codegen)
+        try:
+            link = self.page.get_by_role("link", name="Activity Statement", exact=True)
+            await link.wait_for(state="visible", timeout=10000)
+            await link.click(timeout=5000)
+            logger.info("Clicked Activity Statement using get_by_role exact")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Use menuitem role (common in dropdowns)
+        try:
+            menuitem = self.page.get_by_role("menuitem", name="Activity Statement")
+            await menuitem.wait_for(state="visible", timeout=5000)
+            await menuitem.click(timeout=5000)
+            logger.info("Clicked Activity Statement using menuitem role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Locator with exact text to avoid matching "Activity Statement Summary"
+        try:
+            # Use filter to exclude links that contain "Summary"
+            links = self.page.locator('a:has-text("Activity Statement")').filter(
+                has_not_text="Summary"
+            )
+            await links.first.wait_for(state="visible", timeout=5000)
+            await links.first.click(timeout=5000)
+            logger.info("Clicked Activity Statement using filtered locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 failed: {e}")
+        
+        # Strategy 4: Text locator with force
+        try:
+            await self.page.get_by_text("Activity Statement", exact=True).first.click(
+                force=True, timeout=5000
+            )
+            logger.info("Clicked Activity Statement using text with force")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 failed: {e}")
+        
+        # Strategy 5: JavaScript click
+        try:
+            clicked = await self.page.evaluate('''
+                () => {
+                    const links = document.querySelectorAll('a, [role="menuitem"], [role="link"]');
+                    for (const link of links) {
+                        const text = link.textContent?.trim();
+                        if (text === 'Activity Statement' || 
+                            (text?.includes('Activity Statement') && !text?.includes('Summary'))) {
+                            link.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            if clicked:
+                logger.info("Clicked Activity Statement using JavaScript")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 5 failed: {e}")
+        
+        logger.error("All strategies to click Activity Statement link failed")
+        return False
+    
+    async def _click_create_new_statement(self) -> bool:
+        """
+        Click the 'Create new statement' button.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click 'Create new statement' button")
+        
+        # Strategy 1: Use get_by_role (from codegen)
+        try:
+            btn = self.page.get_by_role("button", name="Create new statement")
+            await btn.wait_for(state="visible", timeout=10000)
+            await btn.scroll_into_view_if_needed()
+            await btn.click(timeout=5000)
+            logger.info("Clicked 'Create new statement' using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Locator with has-text
+        try:
+            btn = self.page.locator('button:has-text("Create new statement")')
+            await btn.first.wait_for(state="visible", timeout=5000)
+            await btn.first.click(timeout=5000)
+            logger.info("Clicked 'Create new statement' using locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Text with force click
+        try:
+            await self.page.get_by_text("Create new statement").click(force=True, timeout=5000)
+            logger.info("Clicked 'Create new statement' using text with force")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 failed: {e}")
+        
+        logger.warning("Could not find 'Create new statement' button")
+        return False
+    
+    async def _click_period_button(self, period: str) -> bool:
+        """
+        Click the period button (e.g., "October 2025 PAYG W" or "December 2025 GST, PAYG W, PAYG I").
+        
+        The period text varies - some have just "PAYG W", others have "GST, PAYG W, PAYG I".
+        The constant is that all contain "PAYG" and the month/year.
+        
+        Args:
+            period: The period text to match (e.g., "October 2025", "December 2025")
+            
+        Returns:
+            True if clicked successfully
+        """
+        logger.info(f"Attempting to click period button for: {period}")
+        
+        # Strategy 1: Use get_by_role with partial name match
+        try:
+            # The button text might be "October 2025 PAYG W" or "December 2025 GST, PAYG W, PAYG I"
+            btn = self.page.get_by_role("button", name=period)
+            await btn.wait_for(state="visible", timeout=10000)
+            await btn.scroll_into_view_if_needed()
+            await btn.click(timeout=5000)
+            logger.info(f"Clicked period button using get_by_role: {period}")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Locator with has-text for partial match
+        try:
+            btn = self.page.locator(f'button:has-text("{period}")')
+            await btn.first.wait_for(state="visible", timeout=5000)
+            await btn.first.scroll_into_view_if_needed()
+            await btn.first.click(timeout=5000)
+            logger.info(f"Clicked period button using locator: {period}")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Look for any clickable element with the period text
+        try:
+            element = self.page.locator(f'[role="button"]:has-text("{period}"), button:has-text("{period}"), a:has-text("{period}")')
+            await element.first.wait_for(state="visible", timeout=5000)
+            await element.first.click(timeout=5000)
+            logger.info(f"Clicked period element: {period}")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 failed: {e}")
+        
+        # Strategy 4: JavaScript click - search for element containing both period AND "PAYG"
+        try:
+            clicked = await self.page.evaluate('''
+                (periodText) => {
+                    const elements = document.querySelectorAll('button, [role="button"], a, [role="option"], li');
+                    for (const el of elements) {
+                        const text = el.textContent;
+                        // Match elements that contain the period (e.g., "December 2025") AND "PAYG"
+                        if (text && text.includes(periodText) && text.includes('PAYG')) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    // Fallback: just match the period text
+                    for (const el of elements) {
+                        if (el.textContent && el.textContent.includes(periodText)) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''', period)
+            if clicked:
+                logger.info(f"Clicked period button using JavaScript: {period}")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 failed: {e}")
+        
+        # Strategy 5: Try clicking on list items or options in dropdown
+        try:
+            # The dropdown might use li elements or role="option"
+            options = self.page.locator(f'li:has-text("{period}"), [role="option"]:has-text("{period}")')
+            count = await options.count()
+            if count > 0:
+                await options.first.click(timeout=5000)
+                logger.info(f"Clicked period option in dropdown: {period}")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 5 failed: {e}")
+        
+        logger.warning(f"Could not find period button for: {period}")
+        return False
+    
     async def _export_to_excel(self, report_type: str, tenant_name: str) -> Optional[str]:
         """
         Export the current report to Excel.
+        
+        Workflow from codegen:
+        1. Click "Export" button
+        2. Check "Excel" radio button
+        3. Click "Export" button again (the second one in the modal)
         
         Returns:
             Path to downloaded file, or None if failed
@@ -526,31 +940,95 @@ class XeroAutomation:
         try:
             await self._take_debug_screenshot("export_start")
             
-            # Try to find and click Export button
-            export_clicked = await self._click_element("export_button", timeout=5000)
-            
-            if not export_clicked:
-                # Try clicking "More" first, then Export
-                if await self._click_element("more_button", timeout=3000):
-                    await asyncio.sleep(0.5)
-                    export_clicked = await self._click_element("export_button", timeout=5000)
+            # Step 1: Click first Export button to open export modal
+            export_clicked = await self._click_export_button()
             
             if not export_clicked:
                 logger.error("Could not find Export button")
                 return None
             
-            await asyncio.sleep(0.5)
-            await self._take_debug_screenshot("export_menu_opened")
+            await asyncio.sleep(1.5)  # Wait for modal to open
+            await self._take_debug_screenshot("export_modal_opened")
             
-            # Click Excel option and wait for download
-            async def click_excel():
-                if not await self._click_element("excel_option", timeout=5000):
-                    # Try direct text click
-                    await self.page.click('text=Excel', timeout=5000)
+            # Step 2: Check Excel radio button
+            await self._select_excel_format()
+            
+            await asyncio.sleep(0.5)
+            await self._take_debug_screenshot("excel_selected")
+            
+            # Step 3: Click the BOTTOM Export button (not the top one which may be obscured by popups)
+            # The page has an "Adjust G field values" popup that can overlap with the top Export button
+            # Using the bottom Export button avoids this conflict
+            await self._take_debug_screenshot("before_final_export")
+            
+            # First, scroll to the bottom of the page to ensure the bottom Export button is visible
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(0.5)
+            
+            async def click_final_export():
+                # Click the LAST (bottom) Export button to avoid popup conflicts
+                # Strategy 1: Use get_by_role and click the LAST Export button
+                try:
+                    export_buttons = self.page.get_by_role("button", name="Export")
+                    count = await export_buttons.count()
+                    logger.info(f"Found {count} Export buttons - clicking the LAST one (bottom)")
+                    if count > 0:
+                        # Click the last (bottom) Export button
+                        await export_buttons.last.click(timeout=5000)
+                        logger.info("Clicked LAST (bottom) Export button using get_by_role")
+                        return
+                except Exception as e:
+                    logger.debug(f"Strategy 1 for final export failed: {e}")
+                
+                # Strategy 2: Use locator and click the last button
+                try:
+                    buttons = self.page.locator('button:has-text("Export")')
+                    count = await buttons.count()
+                    logger.info(f"Found {count} buttons with Export text - clicking the LAST one")
+                    if count > 0:
+                        await buttons.last.click(timeout=5000)
+                        logger.info("Clicked LAST Export button using locator")
+                        return
+                except Exception as e:
+                    logger.debug(f"Strategy 2 for final export failed: {e}")
+                
+                # Strategy 3: JavaScript click on the LAST Export button (bottom of page)
+                try:
+                    clicked = await self.page.evaluate('''
+                        () => {
+                            const buttons = Array.from(document.querySelectorAll('button'));
+                            // Filter to only Export buttons
+                            const exportButtons = buttons.filter(btn => 
+                                btn.textContent && btn.textContent.trim() === 'Export'
+                            );
+                            if (exportButtons.length > 0) {
+                                // Click the LAST one (bottom of page)
+                                const lastBtn = exportButtons[exportButtons.length - 1];
+                                lastBtn.scrollIntoView();
+                                lastBtn.click();
+                                return true;
+                            }
+                            return false;
+                        }
+                    ''')
+                    if clicked:
+                        logger.info("Clicked LAST Export button using JavaScript")
+                        return
+                except Exception as e:
+                    logger.debug(f"Strategy 3 for final export failed: {e}")
+                
+                # Strategy 4: Click with force on the last button
+                try:
+                    await self.page.get_by_role("button", name="Export").last.click(force=True, timeout=5000)
+                    logger.info("Clicked last Export button with force")
+                    return
+                except Exception as e:
+                    logger.debug(f"Strategy 4 for final export failed: {e}")
+                    raise e
             
             try:
                 file_path = await self.browser.wait_for_download(
-                    click_excel,
+                    click_final_export,
                     timeout=60000
                 )
             except Exception as e:
@@ -576,6 +1054,123 @@ class XeroAutomation:
         except Exception as e:
             logger.error(f"Error exporting to Excel: {e}")
             return None
+    
+    async def _click_export_button(self) -> bool:
+        """
+        Click the Export button to open the export modal.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click Export button")
+        
+        # Strategy 1: Use get_by_role
+        try:
+            btn = self.page.get_by_role("button", name="Export")
+            await btn.first.wait_for(state="visible", timeout=10000)
+            await btn.first.scroll_into_view_if_needed()
+            await btn.first.click(timeout=5000)
+            logger.info("Clicked Export button using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Locator with has-text
+        try:
+            btn = self.page.locator('button:has-text("Export")')
+            await btn.first.wait_for(state="visible", timeout=5000)
+            await btn.first.click(timeout=5000)
+            logger.info("Clicked Export button using locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Use fallback selectors
+        if await self._click_element("export_button", timeout=5000):
+            logger.info("Clicked Export button using fallback selectors")
+            return True
+        
+        logger.error("Could not find Export button")
+        return False
+    
+    async def _select_excel_format(self) -> bool:
+        """
+        Select Excel format in the export modal.
+        
+        Returns:
+            True if selected successfully
+        """
+        logger.info("Attempting to select Excel format")
+        
+        # Strategy 1: Use get_by_role for radio button (from codegen)
+        try:
+            radio = self.page.get_by_role("radio", name="Excel")
+            await radio.wait_for(state="visible", timeout=5000)
+            await radio.check(timeout=5000)
+            logger.info("Selected Excel using get_by_role radio")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Click the label
+        try:
+            label = self.page.get_by_label("Excel")
+            await label.click(timeout=5000)
+            logger.info("Selected Excel by clicking label")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Click text "Excel" near a radio button
+        try:
+            await self.page.locator('label:has-text("Excel")').click(timeout=5000)
+            logger.info("Selected Excel using label locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 failed: {e}")
+        
+        # Strategy 4: Click any element with Excel text in the modal
+        try:
+            modal = self.page.locator('[role="dialog"], .modal, [class*="modal"], [class*="export"]')
+            excel_option = modal.get_by_text("Excel")
+            await excel_option.click(timeout=5000)
+            logger.info("Selected Excel in modal")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 failed: {e}")
+        
+        # Strategy 5: JavaScript to find and click Excel radio
+        try:
+            clicked = await self.page.evaluate('''
+                () => {
+                    // Try to find radio button with Excel label
+                    const labels = document.querySelectorAll('label');
+                    for (const label of labels) {
+                        if (label.textContent?.includes('Excel')) {
+                            label.click();
+                            return true;
+                        }
+                    }
+                    // Try to find radio input with Excel value
+                    const radios = document.querySelectorAll('input[type="radio"]');
+                    for (const radio of radios) {
+                        if (radio.value?.toLowerCase().includes('excel') || 
+                            radio.id?.toLowerCase().includes('excel')) {
+                            radio.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            if clicked:
+                logger.info("Selected Excel using JavaScript")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 5 failed: {e}")
+        
+        logger.warning("Could not find Excel option, it might already be selected")
+        return False
     
     async def download_reports_for_tenant(
         self,

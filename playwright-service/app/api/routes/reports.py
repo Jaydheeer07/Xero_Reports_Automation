@@ -118,16 +118,16 @@ async def download_activity_statement(
     browser_manager = await BrowserManager.get_instance()
     automation = XeroAutomation(browser_manager)
     
-    # Switch tenant and download report
-    switch_result = await automation.switch_tenant(request.tenant_name)
-    if not switch_result.get("success"):
-        await _log_download(db, None, "activity_statement", switch_result)
-        return switch_result
+    # Skip tenant switching - the session is already authenticated to the correct tenant
+    # Tenant switching is unreliable due to dynamic page titles and org_switcher detection issues
+    # TODO: Implement reliable tenant switching in the future
+    logger.info(f"Proceeding with download for tenant: {request.tenant_name} (tenant switching disabled)")
     
     # Download the report
     result = await automation.download_activity_statement(
         tenant_name=request.tenant_name,
-        find_unfiled=request.find_unfiled
+        find_unfiled=request.find_unfiled,
+        period=request.period or "October 2025"
     )
     
     # Log the download

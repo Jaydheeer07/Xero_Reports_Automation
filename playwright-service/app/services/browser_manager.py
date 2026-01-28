@@ -3,13 +3,21 @@ Browser Manager - Playwright browser lifecycle management.
 
 Handles browser instance creation, context management, and cleanup.
 Supports both headless (automated) and headed (manual auth) modes.
+
+IMPORTANT: On Windows, Playwright requires ProactorEventLoop for subprocess support.
+When running with uvicorn, do NOT use --reload flag as it switches to SelectorEventLoop
+which is incompatible with Playwright's subprocess requirements.
+
+Run with: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+(without --reload)
 """
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
-from typing import Optional
+from typing import Optional, Callable, Any
 import structlog
 import asyncio
 import os
+from datetime import datetime
 
 from app.config import get_settings
 
@@ -164,11 +172,8 @@ class BrowserManager:
         if not self._page:
             raise RuntimeError("No page available for screenshot")
         
-        # Ensure screenshot directory exists
         os.makedirs(settings.screenshot_dir, exist_ok=True)
         
-        # Generate filename with timestamp
-        from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{name}_{timestamp}.png"
         filepath = os.path.join(settings.screenshot_dir, filename)
@@ -178,7 +183,7 @@ class BrowserManager:
         
         return filepath
     
-    async def wait_for_download(self, trigger_action, timeout: int = 30000) -> str:
+    async def wait_for_download(self, trigger_action: Callable, timeout: int = 30000) -> str:
         """
         Wait for a download to complete after triggering an action.
         
@@ -192,20 +197,18 @@ class BrowserManager:
         if not self._page:
             raise RuntimeError("No page available")
         
-        # Ensure download directory exists
         os.makedirs(settings.download_dir, exist_ok=True)
         
         async with self._page.expect_download(timeout=timeout) as download_info:
             await trigger_action()
         
         download = await download_info.value
-        
-        # Save to our download directory
         filename = download.suggested_filename
         filepath = os.path.join(settings.download_dir, filename)
-        await download.save_as(filepath)
         
-        logger.info("Download completed", filename=filename, path=filepath)
+        await download.save_as(filepath)
+        logger.info("Download completed", path=filepath)
+        
         return filepath
     
     async def health_check(self) -> dict:
@@ -266,6 +269,76 @@ class BrowserManager:
         """Restart the browser with fresh state."""
         await self.close()
         await self.initialize(headless=headless)
+    
+    # Helper methods for page operations (used by xero_auth.py)
+    async def goto(self, url: str, wait_until: str = "load") -> None:
+        """Navigate to a URL."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        await self._page.goto(url, wait_until=wait_until)
+    
+    async def get_url(self) -> str:
+        """Get current page URL."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        return self._page.url
+    
+    async def get_title(self) -> str:
+        """Get current page title."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        return await self._page.title()
+    
+    async def query_selector(self, selector: str) -> Optional[Any]:
+        """Query for an element."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        return await self._page.query_selector(selector)
+    
+    async def query_selector_all(self, selector: str) -> list:
+        """Query for all matching elements."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        return await self._page.query_selector_all(selector)
+    
+    async def click(self, selector: str, timeout: int = 30000) -> None:
+        """Click an element."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        await self._page.click(selector, timeout=timeout)
+    
+    async def fill(self, selector: str, value: str) -> None:
+        """Fill an input field."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        await self._page.fill(selector, value)
+    
+    async def press_key(self, key: str) -> None:
+        """Press a keyboard key."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        await self._page.keyboard.press(key)
+    
+    async def get_text_content(self, selector: str) -> Optional[str]:
+        """Get text content of an element."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        element = await self._page.query_selector(selector)
+        if element:
+            return await element.text_content()
+        return None
+    
+    async def wait_for_selector(self, selector: str, timeout: int = 30000, state: str = "visible") -> Optional[Any]:
+        """Wait for an element to appear."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        return await self._page.wait_for_selector(selector, timeout=timeout, state=state)
+    
+    async def wait_for_load_state(self, state: str = "load", timeout: int = 30000) -> None:
+        """Wait for page load state."""
+        if not self._page:
+            raise RuntimeError("No page available")
+        await self._page.wait_for_load_state(state, timeout=timeout)
 
 
 # Convenience function for dependency injection
