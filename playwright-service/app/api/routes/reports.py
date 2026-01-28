@@ -151,11 +151,16 @@ async def download_payroll_summary(
     
     This endpoint:
     1. Ensures browser is authenticated
-    2. Switches to the specified tenant
-    3. Navigates to Payroll Activity Summary
-    4. Sets date range to last month (or specified period)
-    5. Downloads the report as Excel
-    6. Returns the file path
+    2. Navigates to Reporting > All Reports > Payroll Activity Summary
+    3. Sets date range to specified month/year (or defaults to last month)
+    4. Downloads the report as Excel
+    5. Returns the file path
+    
+    The date range is automatically calculated based on the month/year:
+    - Start date: 1st of the month (e.g., "1 October 2025")
+    - End date: Last day of the month (e.g., "31 October 2025")
+    
+    The system handles months with different day counts (28, 29, 30, 31) correctly.
     """
     logger.info(
         "Payroll summary download requested",
@@ -174,11 +179,10 @@ async def download_payroll_summary(
     browser_manager = await BrowserManager.get_instance()
     automation = XeroAutomation(browser_manager)
     
-    # Switch tenant
-    switch_result = await automation.switch_tenant(request.tenant_name)
-    if not switch_result.get("success"):
-        await _log_download(db, None, "payroll_summary", switch_result)
-        return switch_result
+    # Skip tenant switching - the session is already authenticated to the correct tenant
+    # Tenant switching is unreliable due to dynamic page titles and org_switcher detection issues
+    # TODO: Implement reliable tenant switching in the future
+    logger.info(f"Proceeding with download for tenant: {request.tenant_name} (tenant switching disabled)")
     
     # Download the report
     result = await automation.download_payroll_activity_summary(
@@ -192,7 +196,7 @@ async def download_payroll_summary(
         select(Client).where(Client.tenant_id == request.tenant_id)
     )
     client = client_result.scalar_one_or_none()
-    await _log_download(db, client.id if client else None, "payroll_summary", result)
+    await _log_download(db, client.id if client else None, "payroll_activity_summary", result)
     
     return result
 

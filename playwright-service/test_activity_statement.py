@@ -15,7 +15,7 @@ TENANT_NAME = "Marsill Pty Ltd"
 # Note: tenant_id is used for database lookups only, not for Xero navigation
 # The actual tenant is identified by tenant_name via page title
 TENANT_ID = "!mkK34"  # Xero shortcode from URL (e.g., https://go.xero.com/app/!mkK34/homepage)
-PERIOD = "December 2025"
+PERIOD = "November 2025"
 
 def test_activity_statement_download():
     """Test downloading Activity Statement for November 2025."""

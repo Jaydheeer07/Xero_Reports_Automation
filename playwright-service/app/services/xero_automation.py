@@ -8,8 +8,9 @@ Handles:
 - Payroll Activity Summary download
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 from datetime import datetime
+import calendar
 import structlog
 import asyncio
 import os
@@ -22,6 +23,57 @@ from app.config import get_settings
 
 logger = structlog.get_logger()
 settings = get_settings()
+
+
+def get_month_date_range(month: int, year: int) -> Tuple[str, str]:
+    """
+    Get the start and end date for a given month/year.
+    
+    Uses calendar.monthrange to correctly handle months with 28, 29, 30, or 31 days.
+    
+    Args:
+        month: Month number (1-12)
+        year: Year (e.g., 2025)
+        
+    Returns:
+        Tuple of (start_date, end_date) in "dd MMMM yyyy" format
+        e.g., ("1 October 2025", "31 October 2025")
+    """
+    # Get the number of days in the month (handles leap years for February)
+    _, last_day = calendar.monthrange(year, month)
+    
+    # Get month name
+    month_name = calendar.month_name[month]  # e.g., "October"
+    
+    start_date = f"1 {month_name} {year}"
+    end_date = f"{last_day} {month_name} {year}"
+    
+    return start_date, end_date
+
+
+def parse_period_to_month_year(period: str) -> Tuple[int, int]:
+    """
+    Parse a period string like "October 2025" to (month, year).
+    
+    Args:
+        period: Period string in format "Month Year" (e.g., "October 2025")
+        
+    Returns:
+        Tuple of (month, year) as integers
+    """
+    # Map month names to numbers
+    month_map = {name.lower(): num for num, name in enumerate(calendar.month_name) if num}
+    
+    parts = period.strip().split()
+    if len(parts) >= 2:
+        month_name = parts[0].lower()
+        year = int(parts[-1])
+        month = month_map.get(month_name, 1)
+        return month, year
+    
+    # Default to current month if parsing fails
+    now = datetime.now()
+    return now.month, now.year
 
 
 # Xero URL patterns
@@ -400,69 +452,133 @@ class XeroAutomation:
         """
         Download the Payroll Activity Summary report.
         
+        Workflow (from codegen):
+        1. Click "Reporting" on navbar
+        2. Click "All reports" in dropdown
+        3. Scroll down and click "Payroll Activity Summary"
+        4. Enter start date and end date in date range fields
+        5. Click "Update" button
+        6. Click "Export" button
+        7. Select "Excel" format
+        
         Args:
             tenant_name: Name of the tenant (for file naming)
-            month: Optional month (1-12), defaults to last month
-            year: Optional year, defaults to current/last year
+            month: Month (1-12), defaults to last month
+            year: Year, defaults to current/last year based on month
             
         Returns:
             Dict with success status and file path
         """
         try:
-            logger.info(f"Downloading Payroll Activity Summary for {tenant_name}")
+            # Determine the date range
+            if month is None or year is None:
+                # Default to last month
+                now = datetime.now()
+                if now.month == 1:
+                    month = 12
+                    year = now.year - 1
+                else:
+                    month = now.month - 1
+                    year = now.year
+            
+            start_date, end_date = get_month_date_range(month, year)
+            period_display = f"{calendar.month_name[month]} {year}"
+            
+            logger.info(
+                f"Downloading Payroll Activity Summary for {tenant_name}",
+                period=period_display,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            # Navigate to Xero dashboard first to ensure we're on the right page
+            current_url = self.page.url
+            logger.info(f"Current URL: {current_url}")
+            
+            if "xero.com" not in current_url:
+                await self.page.goto(XERO_URLS["dashboard"], wait_until="domcontentloaded", timeout=60000)
+            
+            # Wait for page to fully load
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                logger.debug("networkidle timeout, continuing anyway...")
+            await asyncio.sleep(3)
             
             await self._take_debug_screenshot("payroll_start")
             
-            # Navigate to Reports
-            await self.page.goto(XERO_URLS["reports"], wait_until="networkidle")
+            # Step 1: Click "Reporting" on navbar
+            reporting_clicked = await self._click_reporting_nav()
+            if not reporting_clicked:
+                screenshot = await self.browser.take_screenshot("payroll_reporting_nav_not_found")
+                return {
+                    "success": False,
+                    "error": "Could not find Reporting navigation link",
+                    "screenshot": screenshot
+                }
+            
             await asyncio.sleep(2)
+            await self._take_debug_screenshot("payroll_reporting_menu_opened")
             
-            await self._take_debug_screenshot("reports_page")
+            # Step 2: Click "All reports" in dropdown
+            all_reports_clicked = await self._click_all_reports_link()
+            if not all_reports_clicked:
+                screenshot = await self.browser.take_screenshot("payroll_all_reports_not_found")
+                return {
+                    "success": False,
+                    "error": "Could not find 'All reports' link",
+                    "screenshot": screenshot
+                }
             
-            # Search for Payroll Activity Summary
-            search_input = await self._find_element("report_search", timeout=10000)
-            if not search_input:
-                search_input = await self._find_element("search_input", timeout=5000)
-            
-            if search_input:
-                await search_input.fill("Payroll Activity Summary")
-                await asyncio.sleep(1)
-            
-            # Click on the report
-            if not await self._click_element("payroll_activity_summary", timeout=10000):
-                # Try direct text click
-                try:
-                    await self.page.click('text=Payroll Activity Summary', timeout=10000)
-                except PlaywrightTimeout:
-                    screenshot = await self.browser.take_screenshot("payroll_report_not_found")
-                    return {
-                        "success": False,
-                        "error": "Could not find Payroll Activity Summary report",
-                        "screenshot": screenshot
-                    }
-            
-            await self.page.wait_for_load_state("networkidle")
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                logger.debug("networkidle timeout after All reports click, continuing...")
             await asyncio.sleep(2)
+            await self._take_debug_screenshot("payroll_all_reports_page")
             
+            # Step 3: Scroll down and click "Payroll Activity Summary"
+            payroll_clicked = await self._click_payroll_activity_summary_link()
+            if not payroll_clicked:
+                screenshot = await self.browser.take_screenshot("payroll_report_not_found")
+                return {
+                    "success": False,
+                    "error": "Could not find Payroll Activity Summary report",
+                    "screenshot": screenshot
+                }
+            
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                logger.debug("networkidle timeout after Payroll Activity Summary click, continuing...")
+            await asyncio.sleep(2)
             await self._take_debug_screenshot("payroll_report_page")
             
-            # Set date range to "Last month"
-            if await self._click_element("date_range_dropdown", timeout=5000):
-                await asyncio.sleep(0.5)
-                await self._click_element("last_month_option", timeout=5000)
-                await asyncio.sleep(0.5)
-                
-                # Click Update button
-                await self._click_element("update_button", timeout=5000)
-                await self.page.wait_for_load_state("networkidle")
+            # Step 4: Enter date range
+            date_entered = await self._enter_payroll_date_range(start_date, end_date)
+            if not date_entered:
+                logger.warning("Could not enter date range, proceeding with default dates")
+            
+            await self._take_debug_screenshot("payroll_dates_entered")
+            
+            # Step 5: Click Update button
+            update_clicked = await self._click_update_button()
+            if update_clicked:
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.debug("networkidle timeout after Update click, continuing...")
                 await asyncio.sleep(2)
+            else:
+                logger.warning("Could not click Update button, report may show default data")
             
-            await self._take_debug_screenshot("payroll_report_loaded")
+            await self._take_debug_screenshot("payroll_report_updated")
             
-            # Export to Excel
-            file_path = await self._export_to_excel(
-                report_type="payroll_summary",
-                tenant_name=tenant_name
+            # Step 6 & 7: Export to Excel
+            file_path = await self._export_payroll_to_excel(
+                report_type="payroll_activity_summary",
+                tenant_name=tenant_name,
+                period=period_display
             )
             
             if file_path:
@@ -471,7 +587,10 @@ class XeroAutomation:
                     "file_path": file_path,
                     "file_name": os.path.basename(file_path),
                     "tenant_name": tenant_name,
-                    "report_type": "payroll_activity_summary"
+                    "report_type": "payroll_activity_summary",
+                    "period": period_display,
+                    "start_date": start_date,
+                    "end_date": end_date
                 }
             else:
                 screenshot = await self.browser.take_screenshot("payroll_export_failed")
@@ -1171,6 +1290,456 @@ class XeroAutomation:
         
         logger.warning("Could not find Excel option, it might already be selected")
         return False
+    
+    async def _click_all_reports_link(self) -> bool:
+        """
+        Click the 'All reports' link in the Reporting dropdown.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click 'All reports' link")
+        
+        # Strategy 1: Use get_by_role with exact match (from codegen)
+        try:
+            link = self.page.get_by_role("link", name="All reports")
+            await link.wait_for(state="visible", timeout=10000)
+            await link.click(timeout=5000)
+            logger.info("Clicked 'All reports' using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Use menuitem role
+        try:
+            menuitem = self.page.get_by_role("menuitem", name="All reports")
+            await menuitem.wait_for(state="visible", timeout=5000)
+            await menuitem.click(timeout=5000)
+            logger.info("Clicked 'All reports' using menuitem role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Locator with has-text
+        try:
+            link = self.page.locator('a:has-text("All reports")')
+            await link.first.wait_for(state="visible", timeout=5000)
+            await link.first.click(timeout=5000)
+            logger.info("Clicked 'All reports' using locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 failed: {e}")
+        
+        # Strategy 4: Text with force click
+        try:
+            await self.page.get_by_text("All reports", exact=True).click(force=True, timeout=5000)
+            logger.info("Clicked 'All reports' using text with force")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 failed: {e}")
+        
+        # Strategy 5: JavaScript click
+        try:
+            clicked = await self.page.evaluate('''
+                () => {
+                    const elements = document.querySelectorAll('a, [role="menuitem"], [role="link"]');
+                    for (const el of elements) {
+                        if (el.textContent?.trim() === 'All reports') {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            if clicked:
+                logger.info("Clicked 'All reports' using JavaScript")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 5 failed: {e}")
+        
+        logger.error("All strategies to click 'All reports' link failed")
+        return False
+    
+    async def _click_payroll_activity_summary_link(self) -> bool:
+        """
+        Click the 'Payroll Activity Summary' link on the All Reports page.
+        May need to scroll down to find it.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click 'Payroll Activity Summary' link")
+        
+        # First, scroll down the page to ensure the link is visible
+        await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+        await asyncio.sleep(1)
+        
+        # Strategy 1: Use get_by_role with exact match (from codegen)
+        try:
+            link = self.page.get_by_role("link", name="Payroll Activity Summary")
+            await link.wait_for(state="visible", timeout=10000)
+            await link.scroll_into_view_if_needed()
+            await link.click(timeout=5000)
+            logger.info("Clicked 'Payroll Activity Summary' using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Locator with has-text
+        try:
+            link = self.page.locator('a:has-text("Payroll Activity Summary")')
+            await link.first.wait_for(state="visible", timeout=5000)
+            await link.first.scroll_into_view_if_needed()
+            await link.first.click(timeout=5000)
+            logger.info("Clicked 'Payroll Activity Summary' using locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Text locator with scroll
+        try:
+            element = self.page.get_by_text("Payroll Activity Summary", exact=True)
+            await element.scroll_into_view_if_needed()
+            await element.click(timeout=5000)
+            logger.info("Clicked 'Payroll Activity Summary' using text locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 3 failed: {e}")
+        
+        # Strategy 4: JavaScript click with scroll
+        try:
+            clicked = await self.page.evaluate('''
+                () => {
+                    const links = document.querySelectorAll('a');
+                    for (const link of links) {
+                        if (link.textContent?.includes('Payroll Activity Summary')) {
+                            link.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            link.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            if clicked:
+                logger.info("Clicked 'Payroll Activity Summary' using JavaScript")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 failed: {e}")
+        
+        logger.error("All strategies to click 'Payroll Activity Summary' link failed")
+        return False
+    
+    async def _enter_payroll_date_range(self, start_date: str, end_date: str) -> bool:
+        """
+        Enter the date range for the Payroll Activity Summary report.
+        
+        From codegen:
+        - Click on the date range textbox (name="Date range: This month Select")
+        - Fill with start date (e.g., "1 October 2025")
+        - Click on end date textbox (name="Select end date")
+        - Fill with end date (e.g., "31 October 2025")
+        
+        Args:
+            start_date: Start date in "d MMMM yyyy" format (e.g., "1 October 2025")
+            end_date: End date in "d MMMM yyyy" format (e.g., "31 October 2025")
+            
+        Returns:
+            True if dates were entered successfully
+        """
+        logger.info(f"Entering date range: {start_date} to {end_date}")
+        
+        start_entered = False
+        end_entered = False
+        
+        # Enter start date
+        # Strategy 1: Use get_by_role with textbox (from codegen)
+        try:
+            # The textbox has a complex name, try partial match
+            start_input = self.page.get_by_role("textbox", name="Date range")
+            await start_input.wait_for(state="visible", timeout=10000)
+            await start_input.click(timeout=5000)
+            await start_input.fill(start_date)
+            logger.info(f"Entered start date using get_by_role: {start_date}")
+            start_entered = True
+        except Exception as e:
+            logger.debug(f"Strategy 1 for start date failed: {e}")
+        
+        if not start_entered:
+            # Strategy 2: Try locator with placeholder or aria-label
+            try:
+                start_input = self.page.locator('input[placeholder*="date"], input[aria-label*="start"], input[aria-label*="Date range"]').first
+                await start_input.wait_for(state="visible", timeout=5000)
+                await start_input.click(timeout=5000)
+                await start_input.fill(start_date)
+                logger.info(f"Entered start date using locator: {start_date}")
+                start_entered = True
+            except Exception as e:
+                logger.debug(f"Strategy 2 for start date failed: {e}")
+        
+        if not start_entered:
+            # Strategy 3: JavaScript to find and fill start date input
+            try:
+                filled = await self.page.evaluate('''
+                    (startDate) => {
+                        const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+                        for (const input of inputs) {
+                            const label = input.getAttribute('aria-label') || input.placeholder || '';
+                            if (label.toLowerCase().includes('date range') || label.toLowerCase().includes('start')) {
+                                input.focus();
+                                input.value = startDate;
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                ''', start_date)
+                if filled:
+                    logger.info(f"Entered start date using JavaScript: {start_date}")
+                    start_entered = True
+            except Exception as e:
+                logger.debug(f"Strategy 3 for start date failed: {e}")
+        
+        await asyncio.sleep(0.5)
+        
+        # Enter end date
+        # Strategy 1: Use get_by_role with textbox (from codegen)
+        try:
+            end_input = self.page.get_by_role("textbox", name="Select end date")
+            await end_input.wait_for(state="visible", timeout=5000)
+            await end_input.click(timeout=5000)
+            await end_input.fill(end_date)
+            logger.info(f"Entered end date using get_by_role: {end_date}")
+            end_entered = True
+        except Exception as e:
+            logger.debug(f"Strategy 1 for end date failed: {e}")
+        
+        if not end_entered:
+            # Strategy 2: Try locator with placeholder or aria-label
+            try:
+                end_input = self.page.locator('input[placeholder*="end"], input[aria-label*="end date"]').first
+                await end_input.wait_for(state="visible", timeout=5000)
+                await end_input.click(timeout=5000)
+                await end_input.fill(end_date)
+                logger.info(f"Entered end date using locator: {end_date}")
+                end_entered = True
+            except Exception as e:
+                logger.debug(f"Strategy 2 for end date failed: {e}")
+        
+        if not end_entered:
+            # Strategy 3: JavaScript to find and fill end date input
+            try:
+                filled = await self.page.evaluate('''
+                    (endDate) => {
+                        const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+                        for (const input of inputs) {
+                            const label = input.getAttribute('aria-label') || input.placeholder || '';
+                            if (label.toLowerCase().includes('end date') || label.toLowerCase().includes('end')) {
+                                input.focus();
+                                input.value = endDate;
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                ''', end_date)
+                if filled:
+                    logger.info(f"Entered end date using JavaScript: {end_date}")
+                    end_entered = True
+            except Exception as e:
+                logger.debug(f"Strategy 3 for end date failed: {e}")
+        
+        # Press Escape to close any date picker that might be open
+        await self.page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        
+        if start_entered and end_entered:
+            logger.info("Successfully entered both start and end dates")
+            return True
+        elif start_entered or end_entered:
+            logger.warning(f"Only partially entered dates: start={start_entered}, end={end_entered}")
+            return True  # Partial success
+        else:
+            logger.error("Failed to enter date range")
+            return False
+    
+    async def _click_update_button(self) -> bool:
+        """
+        Click the Update button to refresh the report with new date range.
+        
+        Returns:
+            True if clicked successfully
+        """
+        logger.info("Attempting to click Update button")
+        
+        # Strategy 1: Use get_by_role (from codegen)
+        try:
+            btn = self.page.get_by_role("button", name="Update")
+            await btn.wait_for(state="visible", timeout=10000)
+            await btn.click(timeout=5000)
+            logger.info("Clicked Update button using get_by_role")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Locator with has-text
+        try:
+            btn = self.page.locator('button:has-text("Update")')
+            await btn.first.wait_for(state="visible", timeout=5000)
+            await btn.first.click(timeout=5000)
+            logger.info("Clicked Update button using locator")
+            return True
+        except Exception as e:
+            logger.debug(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Use fallback selectors
+        if await self._click_element("update_button", timeout=5000):
+            logger.info("Clicked Update button using fallback selectors")
+            return True
+        
+        # Strategy 4: JavaScript click
+        try:
+            clicked = await self.page.evaluate('''
+                () => {
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        if (btn.textContent?.trim() === 'Update') {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            ''')
+            if clicked:
+                logger.info("Clicked Update button using JavaScript")
+                return True
+        except Exception as e:
+            logger.debug(f"Strategy 4 failed: {e}")
+        
+        logger.error("Could not find Update button")
+        return False
+    
+    async def _export_payroll_to_excel(
+        self,
+        report_type: str,
+        tenant_name: str,
+        period: str
+    ) -> Optional[str]:
+        """
+        Export the Payroll Activity Summary report to Excel.
+        
+        Workflow from codegen:
+        1. Click "Export" button at the bottom
+        2. Click "Excel" button in the export dropdown
+        
+        Args:
+            report_type: Type of report for filename
+            tenant_name: Tenant name for filename
+            period: Period string for filename (e.g., "October 2025")
+            
+        Returns:
+            Path to downloaded file, or None if failed
+        """
+        try:
+            await self._take_debug_screenshot("payroll_export_start")
+            
+            # Step 1: Click Export button (at the bottom of the report)
+            export_clicked = await self._click_export_button()
+            
+            if not export_clicked:
+                logger.error("Could not find Export button for payroll report")
+                return None
+            
+            await asyncio.sleep(1)
+            await self._take_debug_screenshot("payroll_export_dropdown_opened")
+            
+            # Step 2: Click Excel button in the dropdown
+            # From codegen: page.get_by_role("button", name="Excel").click()
+            async def click_excel_export():
+                # Strategy 1: Use get_by_role for Excel button
+                try:
+                    excel_btn = self.page.get_by_role("button", name="Excel")
+                    await excel_btn.wait_for(state="visible", timeout=5000)
+                    await excel_btn.click(timeout=5000)
+                    logger.info("Clicked Excel button using get_by_role")
+                    return
+                except Exception as e:
+                    logger.debug(f"Strategy 1 for Excel button failed: {e}")
+                
+                # Strategy 2: Locator with has-text
+                try:
+                    excel_btn = self.page.locator('button:has-text("Excel")')
+                    await excel_btn.first.wait_for(state="visible", timeout=5000)
+                    await excel_btn.first.click(timeout=5000)
+                    logger.info("Clicked Excel button using locator")
+                    return
+                except Exception as e:
+                    logger.debug(f"Strategy 2 for Excel button failed: {e}")
+                
+                # Strategy 3: Click text "Excel"
+                try:
+                    await self.page.get_by_text("Excel", exact=True).click(timeout=5000)
+                    logger.info("Clicked Excel using text")
+                    return
+                except Exception as e:
+                    logger.debug(f"Strategy 3 for Excel button failed: {e}")
+                
+                # Strategy 4: JavaScript click
+                try:
+                    clicked = await self.page.evaluate('''
+                        () => {
+                            const elements = document.querySelectorAll('button, a, [role="menuitem"]');
+                            for (const el of elements) {
+                                if (el.textContent?.trim() === 'Excel') {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    ''')
+                    if clicked:
+                        logger.info("Clicked Excel using JavaScript")
+                        return
+                except Exception as e:
+                    logger.debug(f"Strategy 4 for Excel button failed: {e}")
+                    raise e
+            
+            try:
+                file_path = await self.browser.wait_for_download(
+                    click_excel_export,
+                    timeout=60000
+                )
+            except Exception as e:
+                logger.error(f"Download failed: {e}")
+                return None
+            
+            # Rename file with proper naming convention including period
+            # Generate filename with period info
+            safe_tenant = "".join(c for c in tenant_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_period = period.replace(" ", "_")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            new_filename = f"{report_type}_{safe_tenant}_{safe_period}_{timestamp}.xlsx"
+            
+            final_path = self.file_manager.rename_download(file_path, new_filename)
+            
+            # Validate the file
+            if self.file_manager.validate_excel_file(final_path):
+                logger.info(f"Successfully downloaded: {new_filename}")
+                return final_path
+            else:
+                logger.warning(f"Downloaded file may be invalid: {new_filename}")
+                return final_path  # Return anyway, let caller decide
+                
+        except Exception as e:
+            logger.error(f"Error exporting payroll report to Excel: {e}")
+            return None
     
     async def download_reports_for_tenant(
         self,
