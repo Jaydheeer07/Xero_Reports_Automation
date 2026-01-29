@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, Field
 import structlog
 
 from app.db.connection import get_db
@@ -9,6 +10,12 @@ from app.services.xero_session import XeroSessionService
 
 router = APIRouter()
 logger = structlog.get_logger()
+
+
+class SwitchTenantRequest(BaseModel):
+    """Request model for tenant switching."""
+    tenant_name: str = Field(..., description="Name of the Xero tenant/organisation to switch to")
+    tenant_shortcode: str = Field(None, description="Tenant shortcode for URL-based switching (e.g., 'mkK34'). If provided, uses faster URL method.")
 
 
 @router.post("/setup")
@@ -179,10 +186,28 @@ async def list_tenants(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/switch-tenant")
-async def switch_tenant(tenant_name: str, db: AsyncSession = Depends(get_db)):
+async def switch_tenant(request: SwitchTenantRequest, db: AsyncSession = Depends(get_db)):
     """
     Switch to a specified Xero tenant/organisation.
+    
+    This endpoint:
+    1. Checks if already on the target tenant (skips switch if so)
+    2. Opens the organization menu
+    3. Searches for the target tenant
+    4. Clicks the matching tenant link
+    5. Waits for the homepage to load with the new tenant
+    
+    Request body:
+        tenant_name: Name of the Xero tenant/organisation to switch to
+        
+    Returns:
+        success: Whether the operation succeeded
+        current_tenant: The current tenant after the operation
+        switched: Whether a switch was actually performed (false if already on target)
+        previous_tenant: The tenant before switching (if switched)
     """
+    logger.info(f"Tenant switch requested to: {request.tenant_name}")
+    
     browser_manager = await BrowserManager.get_instance()
     
     if not browser_manager.is_initialized:
@@ -209,7 +234,7 @@ async def switch_tenant(tenant_name: str, db: AsyncSession = Depends(get_db)):
     from app.services.xero_automation import XeroAutomation
     
     automation = XeroAutomation(browser_manager)
-    result = await automation.switch_tenant(tenant_name)
+    result = await automation.switch_tenant(request.tenant_name, request.tenant_shortcode)
     
     return result
 

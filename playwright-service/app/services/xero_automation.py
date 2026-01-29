@@ -293,95 +293,240 @@ class XeroAutomation:
             return await self.browser.take_screenshot(name)
         return None
     
-    async def switch_tenant(self, tenant_name: str) -> dict:
+    async def switch_tenant(self, target_tenant: str, tenant_shortcode: str = None) -> dict:
         """
         Switch to a specified Xero tenant/organisation.
         
+        Primary method: URL-based switching using tenant shortcode
+        - Navigate directly to https://go.xero.com/app/!{shortcode}/homepage
+        - Much more reliable than UI clicking
+        
+        Fallback method: UI-based switching (if shortcode not provided)
+        - Click "Toggle Organization menu" button
+        - Search for target tenant in searchbox
+        - Click the matching tenant link
+        
         Args:
-            tenant_name: Name of the organisation to switch to
+            target_tenant: Name of the organisation to switch to
+            tenant_shortcode: Optional shortcode for URL-based switching (e.g., "mkK34" for Marsill)
             
         Returns:
-            Dict with success status and current tenant
+            Dict with success status, current tenant, and whether switch was needed
         """
         try:
-            logger.info(f"Switching to tenant: {tenant_name}")
+            logger.info(f"Tenant switch requested to: {target_tenant}", shortcode=tenant_shortcode)
             
             # Take initial screenshot
             await self._take_debug_screenshot("switch_tenant_start")
             
-            # Click organisation switcher
-            if not await self._click_element("org_switcher"):
-                screenshot = await self.browser.take_screenshot("org_switcher_not_found")
+            # First, check current tenant
+            current_tenant = await self._get_current_tenant_name()
+            logger.info(f"Current tenant: {current_tenant}")
+            
+            # Check if already on the target tenant (case-insensitive comparison)
+            if current_tenant:
+                # Normalize both names for comparison
+                current_normalized = current_tenant.lower().strip()
+                target_normalized = target_tenant.lower().strip()
+                
+                if current_normalized == target_normalized or target_normalized in current_normalized:
+                    logger.info(f"Already on target tenant: {current_tenant}")
+                    return {
+                        "success": True,
+                        "current_tenant": current_tenant,
+                        "switched": False,
+                        "message": "Already on the requested tenant"
+                    }
+            
+            # PRIMARY METHOD: URL-based switching using tenant shortcode
+            if tenant_shortcode:
+                logger.info(f"Using URL-based tenant switching with shortcode: {tenant_shortcode}")
+                tenant_url = f"https://go.xero.com/app/!{tenant_shortcode}/homepage"
+                
+                try:
+                    await self.page.goto(tenant_url, wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=20000)
+                    except Exception:
+                        logger.debug("networkidle timeout after URL navigation, continuing...")
+                    await asyncio.sleep(2)
+                    
+                    await self._take_debug_screenshot("switch_tenant_url_complete")
+                    
+                    # Verify switch was successful
+                    new_tenant = await self._get_current_tenant_name()
+                    logger.info(f"Tenant after URL switch: {new_tenant}")
+                    
+                    # Check if we're on the right tenant
+                    if new_tenant:
+                        new_normalized = new_tenant.lower().strip()
+                        target_normalized = target_tenant.lower().strip()
+                        
+                        if new_normalized == target_normalized or target_normalized in new_normalized:
+                            logger.info(f"Successfully switched to tenant via URL: {new_tenant}")
+                            return {
+                                "success": True,
+                                "current_tenant": new_tenant,
+                                "switched": True,
+                                "previous_tenant": current_tenant,
+                                "method": "url"
+                            }
+                        else:
+                            # URL worked but tenant name doesn't match exactly - still success
+                            return {
+                                "success": True,
+                                "current_tenant": new_tenant,
+                                "switched": True,
+                                "previous_tenant": current_tenant,
+                                "method": "url",
+                                "warning": "Tenant name may not match exactly"
+                            }
+                    else:
+                        # Couldn't get tenant name but URL navigation succeeded
+                        return {
+                            "success": True,
+                            "current_tenant": None,
+                            "switched": True,
+                            "previous_tenant": current_tenant,
+                            "method": "url",
+                            "warning": "Could not verify tenant name after switch"
+                        }
+                        
+                except Exception as e:
+                    logger.warning(f"URL-based switching failed: {e}, falling back to UI method")
+                    # Fall through to UI-based method
+            
+            # FALLBACK METHOD: UI-based switching
+            logger.info("Using UI-based tenant switching (fallback)")
+            
+            # Navigate to homepage first if not there
+            current_url = self.page.url
+            if "xero.com" not in current_url or "/homepage" not in current_url:
+                logger.info("Navigating to Xero dashboard for tenant switch")
+                await self.page.goto(XERO_URLS["dashboard"], wait_until="domcontentloaded", timeout=60000)
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+            
+            await self._take_debug_screenshot("switch_tenant_before_menu")
+            
+            # Step 1: Click "Toggle Organization menu" button
+            # From codegen: page1.get_by_role("button", name="Toggle Organization menu").click()
+            try:
+                toggle_btn = self.page.get_by_role("button", name="Toggle Organization menu")
+                await toggle_btn.wait_for(state="visible", timeout=10000)
+                await toggle_btn.click()
+                logger.info("Clicked Toggle Organization menu button")
+            except Exception as e:
+                logger.warning(f"Toggle Organization menu button not found: {e}")
+                # Fallback: Try clicking on current tenant name
+                try:
+                    if current_tenant:
+                        await self.page.get_by_text(current_tenant).nth(1).click(timeout=5000)
+                        logger.info("Clicked current tenant name as fallback")
+                except Exception:
+                    screenshot = await self.browser.take_screenshot("org_menu_not_found")
+                    return {
+                        "success": False,
+                        "error": "Could not open organization menu",
+                        "screenshot": screenshot
+                    }
+            
+            await asyncio.sleep(1)
+            await self._take_debug_screenshot("switch_tenant_menu_opened")
+            
+            # Step 2: Click on search box and search for tenant
+            # From codegen: page1.get_by_role("searchbox", name="Search organizations").click()
+            try:
+                search_box = self.page.get_by_role("searchbox", name="Search organizations")
+                await search_box.wait_for(state="visible", timeout=10000)
+                await search_box.click()
+                await search_box.fill(target_tenant)
+                logger.info(f"Filled search box with: {target_tenant}")
+            except Exception as e:
+                logger.error(f"Could not find or fill search box: {e}")
+                await self.page.keyboard.press("Escape")
+                screenshot = await self.browser.take_screenshot("search_box_not_found")
                 return {
                     "success": False,
-                    "error": "Could not find organisation switcher",
+                    "error": "Could not find organization search box",
                     "screenshot": screenshot
                 }
             
-            await asyncio.sleep(1)  # Wait for dropdown to appear
-            await self._take_debug_screenshot("org_switcher_opened")
+            await asyncio.sleep(1.5)  # Wait for search results
+            await self._take_debug_screenshot("switch_tenant_search_results")
             
-            # Try to find the tenant by name
-            # First try direct text match
+            # Step 3: Click the matching tenant link
+            # From codegen: page1.get_by_role("link", name="MPL Marsill Pty Ltd").click()
+            # The link name includes a short code prefix, so we search by partial match
             tenant_found = False
             
             try:
-                # Try clicking directly on text matching tenant name
-                await self.page.click(f'text="{tenant_name}"', timeout=5000)
+                # Try to find link containing the tenant name
+                tenant_link = self.page.get_by_role("link", name=target_tenant)
+                await tenant_link.wait_for(state="visible", timeout=5000)
+                await tenant_link.click()
                 tenant_found = True
-            except PlaywrightTimeout:
-                # Try partial match
+                logger.info(f"Clicked tenant link: {target_tenant}")
+            except Exception:
+                # Try partial match - search for links containing the tenant name
                 try:
-                    await self.page.click(f'text={tenant_name}', timeout=5000)
-                    tenant_found = True
-                except PlaywrightTimeout:
-                    pass
-            
-            if not tenant_found:
-                # Try searching if there's a search box
-                search_input = await self._find_element("search_input", timeout=3000)
-                if search_input:
-                    await search_input.fill(tenant_name)
-                    await asyncio.sleep(1)
-                    
-                    # Click the first result
-                    try:
-                        await self.page.click(f'text="{tenant_name}"', timeout=5000)
+                    # Look for any link that contains the tenant name
+                    links = self.page.locator(f'a:has-text("{target_tenant}")')
+                    count = await links.count()
+                    if count > 0:
+                        await links.first.click()
                         tenant_found = True
-                    except PlaywrightTimeout:
-                        pass
+                        logger.info(f"Clicked tenant link using partial match")
+                except Exception as e:
+                    logger.warning(f"Partial match failed: {e}")
             
             if not tenant_found:
-                # Close dropdown and report failure
+                # Close the menu and report failure
                 await self.page.keyboard.press("Escape")
                 screenshot = await self.browser.take_screenshot("tenant_not_found")
                 return {
                     "success": False,
-                    "error": f"Could not find tenant: {tenant_name}",
+                    "error": f"Could not find tenant: {target_tenant}",
                     "screenshot": screenshot
                 }
             
-            # Wait for page to reload after tenant switch
-            await self.page.wait_for_load_state("networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            # Step 4: Wait for page to load with new tenant
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                logger.debug("networkidle timeout after tenant switch, continuing...")
+            await asyncio.sleep(3)
             
             await self._take_debug_screenshot("switch_tenant_complete")
             
             # Verify switch was successful
-            current_tenant = await self._get_current_tenant_name()
+            new_tenant = await self._get_current_tenant_name()
+            logger.info(f"Tenant after switch: {new_tenant}")
             
-            if current_tenant and tenant_name.lower() in current_tenant.lower():
-                logger.info(f"Successfully switched to tenant: {current_tenant}")
-                return {
-                    "success": True,
-                    "current_tenant": current_tenant
-                }
-            else:
-                return {
-                    "success": True,
-                    "current_tenant": current_tenant,
-                    "warning": "Tenant name may not match exactly"
-                }
+            if new_tenant:
+                new_normalized = new_tenant.lower().strip()
+                target_normalized = target_tenant.lower().strip()
+                
+                if new_normalized == target_normalized or target_normalized in new_normalized:
+                    logger.info(f"Successfully switched to tenant: {new_tenant}")
+                    return {
+                        "success": True,
+                        "current_tenant": new_tenant,
+                        "switched": True,
+                        "previous_tenant": current_tenant
+                    }
+            
+            # Switch may have worked but name doesn't match exactly
+            return {
+                "success": True,
+                "current_tenant": new_tenant,
+                "switched": True,
+                "previous_tenant": current_tenant,
+                "warning": "Tenant name may not match exactly"
+            }
                 
         except Exception as e:
             logger.error(f"Error switching tenant: {e}")
