@@ -23,7 +23,7 @@ class ReportRequest(BaseModel):
     tenant_id: str = Field(..., description="Xero tenant ID")
     tenant_name: str = Field(..., description="Xero tenant/organisation name")
     tenant_shortcode: Optional[str] = Field(None, description="Tenant shortcode for URL-based switching")
-    period: Optional[str] = Field(None, description="Report period (e.g., 'October 2025')")
+    period: str = Field(..., description="Report period (e.g., 'October 2025') - REQUIRED")
     find_unfiled: bool = Field(True, description="Find unfiled/draft statements")
 
 

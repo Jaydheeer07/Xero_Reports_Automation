@@ -103,11 +103,17 @@ async def download_activity_statement(
     # TODO: Implement reliable tenant switching in the future
     logger.info(f"Proceeding with download for tenant: {request.tenant_name} (tenant switching disabled)")
     
-    # Download the report
+    # Download the report - period is required, no hardcoded fallback
+    if not request.period:
+        return {
+            "success": False,
+            "error": "Period is required (e.g., 'October 2025')"
+        }
+    
     result = await automation.download_activity_statement(
         tenant_name=request.tenant_name,
         find_unfiled=request.find_unfiled,
-        period=request.period or "October 2025"
+        period=request.period
     )
     
     # Log the download

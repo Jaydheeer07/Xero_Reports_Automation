@@ -772,7 +772,7 @@ class XeroAutomation:
         self,
         tenant_name: str,
         find_unfiled: bool = True,
-        period: str = "October 2025",
+        period: str = None,
         tenant_shortcode: str = None
     ) -> dict:
         """
