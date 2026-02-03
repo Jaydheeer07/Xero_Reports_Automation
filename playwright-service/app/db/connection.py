@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
-from sqlalchemy import text
+from sqlalchemy import text, event
 import structlog
 import ssl
 
@@ -14,8 +14,9 @@ settings = get_settings()
 # The pooler (port 6543) uses PgBouncer which requires special handling for asyncpg
 _connect_args = {}
 _pool_class = None
+_is_supabase = "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.database_url
 
-if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.database_url:
+if _is_supabase:
     # Create SSL context that doesn't verify certificates (required for Supabase pooler)
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
@@ -25,7 +26,6 @@ if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.d
         "ssl": ssl_context,
         # Disable prepared statements for PgBouncer compatibility (transaction mode)
         "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
     }
     # Use NullPool to let Supabase's pooler handle connection pooling
     _pool_class = NullPool
@@ -36,6 +36,8 @@ engine = create_async_engine(
     echo=settings.log_level == "DEBUG",
     poolclass=_pool_class,
     connect_args=_connect_args,
+    # Disable SQLAlchemy's prepared statement cache for PgBouncer compatibility
+    query_cache_size=0 if _is_supabase else 500,
 )
 
 # Session factory
