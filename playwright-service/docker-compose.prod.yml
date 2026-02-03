@@ -27,14 +27,10 @@ services:
       - playwright_screenshots:/app/screenshots
       - playwright_sessions:/app/sessions
     shm_size: '2gb'
-    networks:
-      - existing_network  # Replace with your actual network name
+    # Uses default docker compose network
 
 volumes:
   playwright_downloads:
   playwright_screenshots:
   playwright_sessions:
 
-networks:
-  existing_network:
-    external: true  # Connect to existing Docker network
