@@ -5,6 +5,7 @@ from sqlalchemy import text, event
 import structlog
 import ssl
 import os
+from uuid import uuid4
 
 from app.config import get_settings
 
@@ -28,6 +29,28 @@ _is_supabase = (
 
 if _is_supabase:
     logger.info("PgBouncer/Supabase mode detected - disabling prepared statements")
+    
+    # Custom connection class that generates unique prepared statement names using UUIDs
+    # This prevents collisions when pgbouncer routes requests to different connections
+    try:
+        from asyncpg import Connection as AsyncpgConnection
+        
+        class PgBouncerConnection(AsyncpgConnection):
+            """Custom asyncpg connection class for PgBouncer compatibility.
+            
+            Generates unique prepared statement names using UUIDs to prevent
+            'prepared statement already exists' errors when using pgbouncer
+            in transaction or statement pooling mode.
+            """
+            def _get_unique_id(self, prefix: str) -> str:
+                return f'__asyncpg_{prefix}_{uuid4()}__'
+        
+        _connection_class = PgBouncerConnection
+        logger.info("Using custom PgBouncer-compatible connection class")
+    except ImportError:
+        _connection_class = None
+        logger.warning("Could not import asyncpg Connection class, falling back to cache disabling only")
+    
     # Create SSL context that doesn't verify certificates (required for Supabase pooler)
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
@@ -35,9 +58,15 @@ if _is_supabase:
     
     _connect_args = {
         "ssl": ssl_context,
-        # Disable prepared statements for PgBouncer compatibility (transaction mode)
+        # Disable ALL prepared statement caches for PgBouncer compatibility
         "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
     }
+    
+    # Add custom connection class if available
+    if _connection_class:
+        _connect_args["connection_class"] = _connection_class
+    
     # Use NullPool to let Supabase's pooler handle connection pooling
     _pool_class = NullPool
 
