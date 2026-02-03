@@ -16,6 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY run.py ./run.py
+COPY start.sh ./start.sh
+
+# Fix line endings (Windows -> Unix) and make startup script executable
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 # Create directories for downloads, screenshots, and sessions
 RUN mkdir -p /app/downloads /app/screenshots /app/sessions
@@ -23,15 +27,16 @@ RUN mkdir -p /app/downloads /app/screenshots /app/sessions
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+# Default display for Xvfb (will be set by start.sh, but good to have as fallback)
+ENV DISPLAY=:99
 
 # Expose the FastAPI port
 EXPOSE 8000
 
-# Health check - increased start period to allow for slow DB connections
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+# Health check - increased start period to allow for Xvfb startup and slow DB connections
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Run with Xvfb to provide a virtual display for headed browser mode
+# Run with startup script that initializes Xvfb for headed browser mode
 # This is required because Xero blocks headless browsers during login
-# Xvfb provides a virtual framebuffer for headed mode without a physical display
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", "python", "run.py"]
+CMD ["/app/start.sh"]
