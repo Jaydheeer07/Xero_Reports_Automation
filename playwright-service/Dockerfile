@@ -6,7 +6,7 @@ FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 WORKDIR /app
 
 # Install Xvfb for headed mode on Linux servers (virtual display)
-RUN apt-get update && apt-get install -y xvfb && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y xvfb curl && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -27,9 +27,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Expose the FastAPI port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# Health check - increased start period to allow for slow DB connections
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Run with Xvfb for headed browser support on Linux
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", "python", "run.py"]
+# Run directly (headless mode doesn't need Xvfb)
+# For headed mode, use: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python run.py
+CMD ["python", "run.py"]
