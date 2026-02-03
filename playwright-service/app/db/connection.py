@@ -1,26 +1,41 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
+from sqlalchemy.pool import NullPool
 from sqlalchemy import text
 import structlog
+import ssl
 
 from app.config import get_settings
 
 logger = structlog.get_logger()
 settings = get_settings()
 
-# Supabase Postgres typically requires SSL.
-# If the DATABASE_URL points to Supabase, enable SSL for the asyncpg driver.
-_connect_args = None
+# Supabase connection configuration
+# The pooler (port 6543) uses PgBouncer which requires special handling for asyncpg
+_connect_args = {}
+_pool_class = None
+
 if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.database_url:
-    _connect_args = {"ssl": True}
+    # Create SSL context that doesn't verify certificates (required for Supabase pooler)
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    
+    _connect_args = {
+        "ssl": ssl_context,
+        # Disable prepared statements for PgBouncer compatibility (transaction mode)
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    }
+    # Use NullPool to let Supabase's pooler handle connection pooling
+    _pool_class = NullPool
 
 # Create async engine
 engine = create_async_engine(
     settings.database_url,
     echo=settings.log_level == "DEBUG",
-    pool_size=5,
-    max_overflow=10,
-    connect_args=_connect_args or {},
+    poolclass=_pool_class,
+    connect_args=_connect_args,
 )
 
 # Session factory
