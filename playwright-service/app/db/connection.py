@@ -8,12 +8,19 @@ from app.config import get_settings
 logger = structlog.get_logger()
 settings = get_settings()
 
+# Supabase Postgres typically requires SSL.
+# If the DATABASE_URL points to Supabase, enable SSL for the asyncpg driver.
+_connect_args = None
+if "supabase.co" in settings.database_url or "pooler.supabase.com" in settings.database_url:
+    _connect_args = {"ssl": True}
+
 # Create async engine
 engine = create_async_engine(
     settings.database_url,
     echo=settings.log_level == "DEBUG",
     pool_size=5,
-    max_overflow=10
+    max_overflow=10,
+    connect_args=_connect_args or {},
 )
 
 # Session factory
