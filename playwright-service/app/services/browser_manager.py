@@ -87,22 +87,36 @@ class BrowserManager:
             self._playwright = await async_playwright().start()
             
             # Launch browser with appropriate settings
-            # Additional args help with Xvfb rendering and avoid detection
-            self._browser = await self._playwright.chromium.launch(
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
+            # Different args for headless vs headed mode (Xvfb)
+            base_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--window-size=1920,1080",
+                "--start-maximized",
+            ]
+            
+            if headless:
+                # Headless mode: disable GPU for stability
+                base_args.extend([
                     "--disable-gpu",
                     "--disable-software-rasterizer",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--window-size=1920,1080",
-                    "--start-maximized",
-                ]
+                ])
+            else:
+                # Headed mode (Xvfb): enable GPU rendering for proper display
+                base_args.extend([
+                    "--enable-gpu",
+                    "--use-gl=swiftshader",  # Software OpenGL for Xvfb
+                    "--force-device-scale-factor=1",
+                ])
+            
+            self._browser = await self._playwright.chromium.launch(
+                headless=headless,
+                args=base_args
             )
             
             # Create browser context with download handling

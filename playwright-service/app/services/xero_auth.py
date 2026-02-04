@@ -511,25 +511,44 @@ class XeroAuthService:
             # Xero blocks headless browsers, so we need a visible browser for login
             await self.browser.initialize(headless=False)
             
-            # Navigate to Xero login page
-            logger.info("Navigating to Xero login page")
-            await self.browser.goto(XERO_LOGIN_URL, wait_until="domcontentloaded")
-            
             page = self.browser.page
             
-            # Wait for page to fully render (Xero uses React)
+            # Navigate to Xero login page
+            logger.info("Navigating to Xero login page")
+            await page.goto(XERO_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+            
+            # Wait for page to fully render (Xero uses React with heavy JS)
             logger.info("Waiting for page to fully render")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)  # Increased wait for Xvfb rendering
             
             # Try to wait for networkidle, but don't fail if it times out
             try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_load_state("networkidle", timeout=30000)
             except Exception:
                 logger.debug("networkidle timeout during page load, continuing...")
             
-            # Take debug screenshot to see page state
-            if settings.debug_screenshots:
-                await self.browser.take_screenshot("login_page_loaded")
+            # Additional wait for JS framework to initialize
+            await asyncio.sleep(2)
+            
+            # Always take a debug screenshot to diagnose rendering issues
+            screenshot_path = await self.browser.take_screenshot("login_page_initial")
+            logger.info(f"Login page screenshot saved: {screenshot_path}")
+            
+            # Verify page rendered correctly by checking for expected elements
+            try:
+                # Wait for the login form to be visible - this confirms page rendered
+                await page.wait_for_selector("form", state="visible", timeout=30000)
+                logger.info("Login form detected - page rendered successfully")
+            except Exception as e:
+                logger.error(f"Login form not found - page may not have rendered correctly: {e}")
+                # Take another screenshot for debugging
+                await self.browser.take_screenshot("login_page_render_failed")
+                return {
+                    "success": False,
+                    "error": "Login page failed to render correctly. Check Xvfb display configuration.",
+                    "screenshot": screenshot_path,
+                    "details": str(e)
+                }
             
             # Step 1: Enter email
             logger.info("Entering email")
