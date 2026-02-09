@@ -261,7 +261,9 @@ async def download_consolidated_report(
         tenant_name=request.tenant_name,
         find_unfiled=request.find_unfiled,
         period=period,
-        tenant_shortcode=request.tenant_shortcode
+        tenant_shortcode=request.tenant_shortcode,
+        month=request.month,
+        year=request.year
     )
     
     results["activity_statement"] = activity_result

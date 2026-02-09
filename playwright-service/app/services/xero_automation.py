@@ -85,6 +85,15 @@ XERO_URLS = {
     "payroll_reports": "https://go.xero.com/Reports/PayrollReports",
 }
 
+# Tenant-specific URL templates (use .format(shortcode=...) or f-string)
+# These navigate directly to the correct tenant without UI clicks
+TENANT_URL_TEMPLATES = {
+    "activity_statement": "https://go.xero.com/app/!{shortcode}/bas/overview",
+    "payroll_activity_summary": "https://reporting.xero.com/!{shortcode}/v1/Run/2035",
+    "homepage": "https://go.xero.com/app/!{shortcode}/homepage",
+    "dashboard": "https://go.xero.com/app/!{shortcode}/dashboard",
+}
+
 # Selectors with fallbacks - these may need adjustment based on actual Xero UI
 SELECTORS = {
     # Organisation/Tenant switcher
@@ -302,18 +311,24 @@ class XeroAutomation:
         """
         Extract the tenant shortcode from the current browser URL.
         
-        Xero URLs contain the shortcode in the format:
+        Xero URLs contain the shortcode in these formats:
             https://go.xero.com/app/!{shortcode}/...
+            https://reporting.xero.com/!{shortcode}/v1/...
         
         Returns:
             The shortcode string (without '!') or None if not found
         """
         current_url = self.page.url
+        # Pattern 1: go.xero.com/app/!{shortcode}/...
         match = re.search(r'/app/!([^/]+)/', current_url)
         if match:
             return match.group(1)
-        # Also try without trailing slash (e.g. /app/!shortcode at end of URL)
+        # Pattern 2: go.xero.com/app/!{shortcode} (no trailing slash)
         match = re.search(r'/app/!([^/]+)$', current_url)
+        if match:
+            return match.group(1)
+        # Pattern 3: reporting.xero.com/!{shortcode}/... (direct report URLs)
+        match = re.search(r'reporting\.xero\.com/!([^/]+)/', current_url)
         if match:
             return match.group(1)
         return None
@@ -745,29 +760,90 @@ class XeroAutomation:
                 end_date=end_date
             )
             
-            # Navigate to tenant-specific homepage to ensure correct tenant context
-            current_url = self.page.url
-            logger.info(f"Current URL before navigation: {current_url}")
+            # Navigate to Payroll Activity Summary report
+            # Primary: Use direct URL (reporting.xero.com/!{shortcode}/v1/Run/2035)
+            # Fallback: UI navigation (Reporting > All reports > Payroll Activity Summary)
+            navigated = False
             
-            # Always navigate to tenant-specific URL if shortcode provided
-            # This ensures we're on the correct tenant before downloading
             if tenant_shortcode:
-                tenant_url = f"https://go.xero.com/app/!{tenant_shortcode}/homepage"
-                logger.info(f"Tenant shortcode provided: {tenant_shortcode}, navigating to: {tenant_url}")
-                # Always navigate to ensure correct tenant context
-                await self.page.goto(tenant_url, wait_until="domcontentloaded", timeout=60000)
-                logger.info(f"Navigated to tenant URL, new URL: {self.page.url}")
-            elif "xero.com" not in current_url:
-                await self.page.goto(XERO_URLS["dashboard"], wait_until="domcontentloaded", timeout=60000)
+                # Primary approach: Direct URL navigation
+                payroll_url = TENANT_URL_TEMPLATES["payroll_activity_summary"].format(shortcode=tenant_shortcode)
+                logger.info(f"Navigating directly to Payroll Activity Summary: {payroll_url}")
+                try:
+                    await self.page.goto(payroll_url, wait_until="domcontentloaded", timeout=60000)
+                    logger.info(f"Navigated to Payroll Activity Summary, URL: {self.page.url}")
+                    
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=20000)
+                    except Exception:
+                        logger.debug("networkidle timeout, continuing anyway...")
+                    await asyncio.sleep(3)
+                    navigated = True
+                except Exception as e:
+                    logger.warning(f"Direct URL navigation failed: {e}, falling back to UI navigation")
             
-            # Wait for page to fully load
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                logger.debug("networkidle timeout, continuing anyway...")
-            await asyncio.sleep(3)
+            # Fallback: UI-based navigation
+            if not navigated:
+                current_url = self.page.url
+                logger.info(f"Using UI navigation fallback. Current URL: {current_url}")
+                
+                if tenant_shortcode:
+                    tenant_url = TENANT_URL_TEMPLATES["homepage"].format(shortcode=tenant_shortcode)
+                    await self.page.goto(tenant_url, wait_until="domcontentloaded", timeout=60000)
+                elif "xero.com" not in current_url:
+                    await self.page.goto(XERO_URLS["dashboard"], wait_until="domcontentloaded", timeout=60000)
+                
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.debug("networkidle timeout, continuing anyway...")
+                await asyncio.sleep(3)
+                
+                # Step 1: Click "Reporting" on navbar
+                reporting_clicked = await self._click_reporting_nav()
+                if not reporting_clicked:
+                    screenshot = await self.browser.take_screenshot("payroll_reporting_nav_not_found")
+                    return {
+                        "success": False,
+                        "error": "Could not find Reporting navigation link",
+                        "screenshot": screenshot
+                    }
+                
+                await asyncio.sleep(2)
+                
+                # Step 2: Click "All reports" in dropdown
+                all_reports_clicked = await self._click_all_reports_link()
+                if not all_reports_clicked:
+                    screenshot = await self.browser.take_screenshot("payroll_all_reports_not_found")
+                    return {
+                        "success": False,
+                        "error": "Could not find 'All reports' link",
+                        "screenshot": screenshot
+                    }
+                
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.debug("networkidle timeout after All reports click, continuing...")
+                await asyncio.sleep(2)
+                
+                # Step 3: Scroll down and click "Payroll Activity Summary"
+                payroll_clicked = await self._click_payroll_activity_summary_link()
+                if not payroll_clicked:
+                    screenshot = await self.browser.take_screenshot("payroll_report_not_found")
+                    return {
+                        "success": False,
+                        "error": "Could not find Payroll Activity Summary report",
+                        "screenshot": screenshot
+                    }
+                
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.debug("networkidle timeout after Payroll Activity Summary click, continuing...")
+                await asyncio.sleep(2)
             
-            # Verify we're on the correct tenant before downloading
+            # Verify we're on the correct tenant before proceeding
             if tenant_shortcode:
                 verification = await self._verify_tenant_shortcode(tenant_shortcode)
                 if not verification["valid"]:
@@ -785,53 +861,6 @@ class XeroAutomation:
                         "screenshot": screenshot
                     }
             
-            await self._take_debug_screenshot("payroll_start")
-            
-            # Step 1: Click "Reporting" on navbar
-            reporting_clicked = await self._click_reporting_nav()
-            if not reporting_clicked:
-                screenshot = await self.browser.take_screenshot("payroll_reporting_nav_not_found")
-                return {
-                    "success": False,
-                    "error": "Could not find Reporting navigation link",
-                    "screenshot": screenshot
-                }
-            
-            await asyncio.sleep(2)
-            await self._take_debug_screenshot("payroll_reporting_menu_opened")
-            
-            # Step 2: Click "All reports" in dropdown
-            all_reports_clicked = await self._click_all_reports_link()
-            if not all_reports_clicked:
-                screenshot = await self.browser.take_screenshot("payroll_all_reports_not_found")
-                return {
-                    "success": False,
-                    "error": "Could not find 'All reports' link",
-                    "screenshot": screenshot
-                }
-            
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                logger.debug("networkidle timeout after All reports click, continuing...")
-            await asyncio.sleep(2)
-            await self._take_debug_screenshot("payroll_all_reports_page")
-            
-            # Step 3: Scroll down and click "Payroll Activity Summary"
-            payroll_clicked = await self._click_payroll_activity_summary_link()
-            if not payroll_clicked:
-                screenshot = await self.browser.take_screenshot("payroll_report_not_found")
-                return {
-                    "success": False,
-                    "error": "Could not find Payroll Activity Summary report",
-                    "screenshot": screenshot
-                }
-            
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                logger.debug("networkidle timeout after Payroll Activity Summary click, continuing...")
-            await asyncio.sleep(2)
             await self._take_debug_screenshot("payroll_report_page")
             
             # Step 4: Enter date range
@@ -894,134 +923,199 @@ class XeroAutomation:
         tenant_name: str,
         find_unfiled: bool = True,
         period: str = None,
-        tenant_shortcode: str = None
+        tenant_shortcode: str = None,
+        month: Optional[int] = None,
+        year: Optional[int] = None
     ) -> dict:
         """
         Download the Activity Statement (BAS Report).
         
-        Workflow:
-        1. Click "Reporting" on navbar
-        2. Click "Activity Statement"
-        3. Click "Create new statement" button
-        4. Select the period (e.g., October 2025) from dropdown
-        5. Download the statement
+        Primary approach: Navigate directly to the statement via URL with date params:
+            /bas/statement?startDate=YYYY-MM-01&endDate=YYYY-MM-DD
+        Fallback: Navigate to /bas/overview and click the period link.
         
         Args:
             tenant_name: Name of the tenant (for file naming)
             find_unfiled: If True, look for draft/unfiled statements
-            period: Period to select (e.g., "October 2025")
-            tenant_shortcode: Tenant shortcode for URL-based navigation (preserves tenant context)
+            period: Period display name (e.g., "February 2026")
+            tenant_shortcode: Tenant shortcode for direct URL navigation
+            month: Month (1-12) for date-based URL navigation
+            year: Year for date-based URL navigation
             
         Returns:
             Dict with success status and file path
         """
         try:
-            logger.info(f"Downloading Activity Statement for {tenant_name}, period: {period}, shortcode: {tenant_shortcode}")
+            logger.info(f"Downloading Activity Statement for {tenant_name}, period: {period}, month: {month}, year: {year}, shortcode: {tenant_shortcode}")
             
-            # Navigate to tenant-specific homepage to ensure correct tenant context
-            current_url = self.page.url
-            logger.info(f"Current URL before navigation: {current_url}")
+            # Determine month/year from period string if not provided
+            if (month is None or year is None) and period:
+                try:
+                    parts = period.split()
+                    if len(parts) == 2:
+                        month_name = parts[0]
+                        year = int(parts[1])
+                        # Convert month name to number
+                        month_names = {name.lower(): i for i, name in enumerate(calendar.month_name) if name}
+                        month = month_names.get(month_name.lower())
+                except (ValueError, KeyError):
+                    logger.warning(f"Could not parse month/year from period: {period}")
             
-            # Always navigate to tenant-specific URL if shortcode provided
-            # This ensures we're on the correct tenant before downloading
-            if tenant_shortcode:
-                tenant_url = f"https://go.xero.com/app/!{tenant_shortcode}/homepage"
-                logger.info(f"Tenant shortcode provided: {tenant_shortcode}, navigating to: {tenant_url}")
-                # Always navigate to ensure correct tenant context
-                await self.page.goto(tenant_url, wait_until="domcontentloaded", timeout=60000)
-                logger.info(f"Navigated to tenant URL, new URL: {self.page.url}")
-            elif "xero.com" not in current_url:
-                await self.page.goto(XERO_URLS["dashboard"], wait_until="domcontentloaded", timeout=60000)
+            # Calculate start and end dates for the month
+            start_date_str = None
+            end_date_str = None
+            if month and year:
+                start_date_str = f"{year}-{month:02d}-01"
+                last_day = calendar.monthrange(year, month)[1]
+                end_date_str = f"{year}-{month:02d}-{last_day:02d}"
             
-            # Wait for the page to fully load - Xero is a heavy SPA
-            # Use try/except for networkidle as it may timeout on heavy SPAs
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                logger.debug("networkidle timeout, continuing anyway...")
-            await asyncio.sleep(3)  # Extra time for JavaScript to render navigation
+            navigated_to_statement = False
             
-            # Verify we're on the correct tenant before downloading
-            if tenant_shortcode:
-                verification = await self._verify_tenant_shortcode(tenant_shortcode)
-                if not verification["valid"]:
-                    logger.error(
-                        "Wrong tenant detected before Activity Statement download",
-                        expected=tenant_shortcode,
-                        actual=verification.get("current_shortcode")
-                    )
-                    screenshot = await self.browser.take_screenshot("activity_wrong_tenant")
+            # PRIMARY: Navigate directly to the statement via URL with date params
+            # URL format: /bas/statement?startDate=2026-02-01&endDate=2026-02-28
+            if tenant_shortcode and start_date_str and end_date_str:
+                statement_url = f"https://go.xero.com/app/!{tenant_shortcode}/bas/statement?startDate={start_date_str}&endDate={end_date_str}"
+                logger.info(f"Navigating directly to Activity Statement: {statement_url}")
+                try:
+                    await self.page.goto(statement_url, wait_until="domcontentloaded", timeout=60000)
+                    logger.info(f"Navigated to statement URL: {self.page.url}")
+                    
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=20000)
+                    except Exception:
+                        logger.debug("networkidle timeout, continuing anyway...")
+                    await asyncio.sleep(3)
+                    
+                    # Check if we landed on the "Lodge activity statements" setup page
+                    page_content = await self.page.content()
+                    if "Lodge activity statements with Xero" in page_content or "Lodge reports" in page_content:
+                        logger.warning(f"Activity Statements not configured for tenant: {tenant_name}")
+                        screenshot = await self.browser.take_screenshot("activity_not_configured")
+                        return {
+                            "success": False,
+                            "error": f"Activity Statements not configured for {tenant_name}. The tenant needs to set up Activity Statements in Xero first.",
+                            "screenshot": screenshot
+                        }
+                    
+                    # Verify we're on the correct tenant
+                    if tenant_shortcode:
+                        verification = await self._verify_tenant_shortcode(tenant_shortcode)
+                        if not verification["valid"]:
+                            logger.error(
+                                "Wrong tenant detected after direct URL navigation",
+                                expected=tenant_shortcode,
+                                actual=verification.get("current_shortcode")
+                            )
+                            screenshot = await self.browser.take_screenshot("activity_wrong_tenant")
+                            return {
+                                "success": False,
+                                "error": f"Wrong tenant: {verification.get('reason')}. Aborting download.",
+                                "expected_shortcode": tenant_shortcode,
+                                "actual_shortcode": verification.get("current_shortcode"),
+                                "screenshot": screenshot
+                            }
+                    
+                    await self._take_debug_screenshot("activity_statement_direct_url")
+                    navigated_to_statement = True
+                    logger.info("Successfully navigated to statement via direct URL")
+                    
+                except Exception as e:
+                    logger.warning(f"Direct URL navigation to statement failed: {e}, falling back to overview page")
+            
+            # FALLBACK: Navigate to overview page and click the period
+            if not navigated_to_statement:
+                logger.info("Using fallback: navigating to BAS overview and clicking period")
+                
+                if tenant_shortcode:
+                    activity_url = TENANT_URL_TEMPLATES["activity_statement"].format(shortcode=tenant_shortcode)
+                    logger.info(f"Navigating to Activity Statements overview: {activity_url}")
+                    await self.page.goto(activity_url, wait_until="domcontentloaded", timeout=60000)
+                else:
+                    await self.page.goto(XERO_URLS["activity_statement"], wait_until="domcontentloaded", timeout=60000)
+                
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.debug("networkidle timeout, continuing anyway...")
+                await asyncio.sleep(3)
+                
+                # Verify tenant
+                if tenant_shortcode:
+                    verification = await self._verify_tenant_shortcode(tenant_shortcode)
+                    if not verification["valid"]:
+                        logger.error("Wrong tenant on overview page", expected=tenant_shortcode)
+                        screenshot = await self.browser.take_screenshot("activity_wrong_tenant")
+                        return {
+                            "success": False,
+                            "error": f"Wrong tenant: {verification.get('reason')}. Aborting download.",
+                            "expected_shortcode": tenant_shortcode,
+                            "actual_shortcode": verification.get("current_shortcode"),
+                            "screenshot": screenshot
+                        }
+                
+                # Check for "Lodge activity statements" setup page
+                page_content = await self.page.content()
+                if "Lodge activity statements with Xero" in page_content or "Lodge reports" in page_content:
+                    logger.warning(f"Activity Statements not configured for tenant: {tenant_name}")
+                    screenshot = await self.browser.take_screenshot("activity_not_configured")
                     return {
                         "success": False,
-                        "error": f"Wrong tenant: {verification.get('reason')}. Aborting download to prevent data mix-up.",
-                        "expected_shortcode": tenant_shortcode,
-                        "actual_shortcode": verification.get("current_shortcode"),
+                        "error": f"Activity Statements not configured for {tenant_name}.",
                         "screenshot": screenshot
                     }
+                
+                await self._take_debug_screenshot("activity_statements_overview")
+                
+                # Click the matching period on the overview page
+                period_clicked = False
+                period_variants = []
+                if period:
+                    period_variants.append(period)
+                    parts = period.split()
+                    if len(parts) == 2:
+                        abbrev = f"{parts[0][:3]} {parts[1]}"
+                        if abbrev != period:
+                            period_variants.append(abbrev)
+                
+                for variant in period_variants:
+                    if period_clicked:
+                        break
+                    
+                    # Try Prepare button, Review link, period link, text element, JS click
+                    for strategy_name, strategy_fn in [
+                        ("Prepare button", self._try_click_prepare(variant)),
+                        ("Review link", self._try_click_review(variant)),
+                        ("Period link", self._try_click_period_link(variant)),
+                        ("Text element", self._try_click_text(variant)),
+                        ("JavaScript", self._try_click_js(variant)),
+                    ]:
+                        if period_clicked:
+                            break
+                        try:
+                            result = await strategy_fn
+                            if result:
+                                period_clicked = True
+                                logger.info(f"Clicked via {strategy_name}: {variant}")
+                        except Exception as e:
+                            logger.debug(f"{strategy_name} failed for {variant}: {e}")
+                
+                if not period_clicked:
+                    logger.warning(f"Could not find period on overview: {period}")
+                    screenshot = await self.browser.take_screenshot("activity_period_not_found")
+                    return {
+                        "success": False,
+                        "error": f"Could not find Activity Statement for period: {period}",
+                        "screenshot": screenshot
+                    }
+                
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.debug("networkidle timeout after period click, continuing...")
+                await asyncio.sleep(3)
+                await self._take_debug_screenshot("activity_statement_loaded")
             
-            await self._take_debug_screenshot("activity_start")
-            
-            # Step 1: Click "Reporting" on navbar
-            # Xero uses a navigation bar that loads dynamically
-            reporting_clicked = await self._click_reporting_nav()
-            
-            if not reporting_clicked:
-                screenshot = await self.browser.take_screenshot("reporting_nav_not_found")
-                return {
-                    "success": False,
-                    "error": "Could not find Reporting navigation link",
-                    "screenshot": screenshot
-                }
-            
-            # Wait for dropdown/menu to appear after clicking Reporting
-            await asyncio.sleep(2)
-            await self._take_debug_screenshot("reporting_menu_opened")
-            
-            # Step 2: Click "Activity Statement" link in the dropdown
-            activity_clicked = await self._click_activity_statement_link()
-            
-            if not activity_clicked:
-                screenshot = await self.browser.take_screenshot("activity_statement_not_found")
-                return {
-                    "success": False,
-                    "error": "Could not find Activity Statement link",
-                    "screenshot": screenshot
-                }
-            
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                logger.debug("networkidle timeout after Activity Statement click, continuing...")
-            await asyncio.sleep(2)
-            await self._take_debug_screenshot("activity_statement_page")
-            
-            # Step 3: Click "Create new statement" button
-            create_clicked = await self._click_create_new_statement()
-            if not create_clicked:
-                logger.warning("Could not find 'Create new statement' button, trying to proceed anyway")
-                await self._take_debug_screenshot("no_create_button")
-            else:
-                await asyncio.sleep(2)
-                await self._take_debug_screenshot("create_button_clicked")
-            
-            # Step 4: Click the period button (e.g., "October 2025 PAYG W")
-            period_clicked = await self._click_period_button(period)
-            if not period_clicked:
-                logger.warning(f"Could not find period button for: {period}")
-                await self._take_debug_screenshot("period_not_found")
-            else:
-                await asyncio.sleep(1)
-                await self._take_debug_screenshot("period_selected")
-            
-            # If looking for unfiled, try to find draft/unfiled statement
-            if find_unfiled:
-                draft_found = await self._click_element("draft_statement", timeout=5000)
-                if draft_found:
-                    await self.page.wait_for_load_state("networkidle")
-                    await asyncio.sleep(2)
-                    await self._take_debug_screenshot("draft_statement_selected")
-            
-            # Step 5: Export to Excel
+            # Export to Excel
             file_path = await self._export_to_excel(
                 report_type="activity_statement",
                 tenant_name=tenant_name
@@ -1052,6 +1146,62 @@ class XeroAutomation:
                 "error": str(e),
                 "screenshot": screenshot
             }
+    
+    async def _try_click_prepare(self, variant: str) -> bool:
+        """Try clicking Prepare button near the period text."""
+        row = self.page.locator(f'text="{variant}"').locator('xpath=ancestor::*[contains(@class,"row") or self::tr or self::li or self::div[.//button]]').first
+        prepare_btn = row.get_by_role("link", name="Prepare")
+        await prepare_btn.wait_for(state="visible", timeout=5000)
+        await prepare_btn.click(timeout=5000)
+        return True
+    
+    async def _try_click_review(self, variant: str) -> bool:
+        """Try clicking Review link near the period text."""
+        row = self.page.locator(f'text="{variant}"').locator('xpath=ancestor::*[contains(@class,"row") or self::tr or self::li or self::div[.//a]]').first
+        review_link = row.get_by_role("link", name="Review")
+        await review_link.wait_for(state="visible", timeout=5000)
+        await review_link.click(timeout=5000)
+        return True
+    
+    async def _try_click_period_link(self, variant: str) -> bool:
+        """Try clicking the period text as a link."""
+        link = self.page.get_by_role("link", name=variant)
+        await link.wait_for(state="visible", timeout=5000)
+        await link.click(timeout=5000)
+        return True
+    
+    async def _try_click_text(self, variant: str) -> bool:
+        """Try clicking any element containing the period text."""
+        element = self.page.get_by_text(variant, exact=False).first
+        await element.wait_for(state="visible", timeout=5000)
+        await element.click(timeout=5000)
+        return True
+    
+    async def _try_click_js(self, variant: str) -> bool:
+        """Try clicking via JavaScript."""
+        clicked = await self.page.evaluate('''
+            (periodText) => {
+                const allElements = document.querySelectorAll('a, button');
+                for (const el of allElements) {
+                    const parent = el.closest('div, tr, li');
+                    if (parent && parent.textContent.includes(periodText)) {
+                        const text = el.textContent.trim();
+                        if (text === 'Prepare' || text === 'Review') {
+                            el.click();
+                            return true;
+                        }
+                    }
+                }
+                for (const el of allElements) {
+                    if (el.textContent && el.textContent.includes(periodText)) {
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        ''', variant)
+        return clicked
     
     async def _click_reporting_nav(self) -> bool:
         """

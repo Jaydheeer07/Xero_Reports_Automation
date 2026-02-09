@@ -188,7 +188,7 @@ class BrowserManager:
         
         os.makedirs(settings.screenshot_dir, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{name}_{timestamp}.png"
         filepath = os.path.join(settings.screenshot_dir, filename)
         
