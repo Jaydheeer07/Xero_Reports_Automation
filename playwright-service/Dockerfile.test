@@ -1,8 +1,8 @@
 # Test Dockerfile - Emulates DigitalOcean Ubuntu 24.04 droplet environment
 # Purpose: Test Xvfb rendering fixes locally before deploying to production
 #
-# This builds from Ubuntu 24.04 (noble) to match the production droplet OS,
-# rather than using the Playwright pre-built image (which is Ubuntu 22.04 Jammy).
+# This builds from Ubuntu 24.04 (noble) to match the production droplet OS.
+# Note: Production Dockerfile now also uses noble (v1.50.0-noble).
 
 FROM ubuntu:24.04
 
@@ -84,7 +84,7 @@ ENV DISPLAY=:99
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 # Run with startup script that initializes Xvfb for headed browser mode

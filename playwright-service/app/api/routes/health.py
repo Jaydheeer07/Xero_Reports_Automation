@@ -5,6 +5,7 @@ import structlog
 
 from app.db.connection import get_db
 from app.services.browser_manager import BrowserManager
+from app.api.dependencies import verify_api_key
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -15,6 +16,9 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     """
     Health check endpoint.
     Returns status of the service, database, and browser.
+
+    NOTE: This endpoint is intentionally NOT authenticated so Docker
+    health checks and load balancers can reach it.
     """
     health_status = {
         "status": "healthy",
@@ -24,7 +28,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             "connected": False
         }
     }
-    
+
     # Check database connection
     try:
         await db.execute(text("SELECT 1"))
@@ -33,7 +37,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         logger.error("Database health check failed", error=str(e))
         health_status["database"] = "disconnected"
         health_status["status"] = "unhealthy"
-    
+
     # Check browser status
     try:
         browser_manager = await BrowserManager.get_instance()
@@ -42,15 +46,15 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.error("Browser health check failed", error=str(e))
         health_status["browser"] = {"error": str(e)}
-    
+
     return health_status
 
 
 @router.post("/browser/start")
-async def start_browser(headless: bool = True):
+async def start_browser(headless: bool = True, api_key: str = Depends(verify_api_key)):
     """
     Start the browser instance.
-    
+
     Args:
         headless: If True, run in headless mode. If False, show browser window.
     """
@@ -71,7 +75,7 @@ async def start_browser(headless: bool = True):
 
 
 @router.post("/browser/stop")
-async def stop_browser():
+async def stop_browser(api_key: str = Depends(verify_api_key)):
     """Stop the browser instance."""
     try:
         browser_manager = await BrowserManager.get_instance()
@@ -89,7 +93,7 @@ async def stop_browser():
 
 
 @router.post("/browser/restart")
-async def restart_browser(headless: bool = True):
+async def restart_browser(headless: bool = True, api_key: str = Depends(verify_api_key)):
     """Restart the browser instance."""
     try:
         browser_manager = await BrowserManager.get_instance()

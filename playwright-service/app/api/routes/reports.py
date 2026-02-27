@@ -77,55 +77,55 @@ async def download_activity_statement(
 ):
     """
     Download Activity Statement (BAS Report) for a tenant.
-    
+
     This endpoint:
     1. Ensures browser is authenticated
     2. Switches to the specified tenant
     3. Navigates to Activity Statement
     4. Downloads the draft/unfiled statement as Excel
     5. Returns the file path
+
+    Uses request_lock to prevent concurrent browser access.
     """
     logger.info(
         "Activity statement download requested",
         tenant_id=request.tenant_id,
         tenant_name=request.tenant_name
     )
-    
-    # Ensure authenticated
-    is_auth, auth_error = await _ensure_authenticated(db)
-    if not is_auth:
-        return {"success": False, **auth_error}
-    
-    # Get browser and automation service
-    browser_manager = await BrowserManager.get_instance()
-    automation = XeroAutomation(browser_manager)
-    
-    # Skip tenant switching - the session is already authenticated to the correct tenant
-    # Tenant switching is unreliable due to dynamic page titles and org_switcher detection issues
-    # TODO: Implement reliable tenant switching in the future
-    logger.info(f"Proceeding with download for tenant: {request.tenant_name} (tenant switching disabled)")
-    
+
     # Download the report - period is required, no hardcoded fallback
     if not request.period:
         return {
             "success": False,
             "error": "Period is required (e.g., 'October 2025')"
         }
-    
-    result = await automation.download_activity_statement(
-        tenant_name=request.tenant_name,
-        find_unfiled=request.find_unfiled,
-        period=request.period
-    )
-    
-    # Log the download
-    # Try to find client ID
+
+    browser_manager = await BrowserManager.get_instance()
+
+    # Acquire browser lock to prevent concurrent access
+    async with browser_manager.request_lock:
+        # Ensure authenticated
+        is_auth, auth_error = await _ensure_authenticated(db)
+        if not is_auth:
+            return {"success": False, **auth_error}
+
+        automation = XeroAutomation(browser_manager)
+
+        logger.info(f"Proceeding with download for tenant: {request.tenant_name}")
+
+        result = await automation.download_activity_statement(
+            tenant_name=request.tenant_name,
+            find_unfiled=request.find_unfiled,
+            period=request.period
+        )
+
+    # Log the download (outside lock - doesn't need browser)
     client_result = await db.execute(
         select(Client).where(Client.tenant_id == request.tenant_id)
     )
     client = client_result.scalar_one_or_none()
     await _log_download(db, client.id if client else None, "activity_statement", result)
-    
+
     return result
 
 
@@ -137,19 +137,8 @@ async def download_payroll_summary(
 ):
     """
     Download Payroll Activity Summary for a tenant.
-    
-    This endpoint:
-    1. Ensures browser is authenticated
-    2. Navigates to Reporting > All Reports > Payroll Activity Summary
-    3. Sets date range to specified month/year (or defaults to last month)
-    4. Downloads the report as Excel
-    5. Returns the file path
-    
-    The date range is automatically calculated based on the month/year:
-    - Start date: 1st of the month (e.g., "1 October 2025")
-    - End date: Last day of the month (e.g., "31 October 2025")
-    
-    The system handles months with different day counts (28, 29, 30, 31) correctly.
+
+    Uses request_lock to prevent concurrent browser access.
     """
     logger.info(
         "Payroll summary download requested",
@@ -158,35 +147,34 @@ async def download_payroll_summary(
         month=request.month,
         year=request.year
     )
-    
-    # Ensure authenticated
-    is_auth, auth_error = await _ensure_authenticated(db)
-    if not is_auth:
-        return {"success": False, **auth_error}
-    
-    # Get browser and automation service
+
     browser_manager = await BrowserManager.get_instance()
-    automation = XeroAutomation(browser_manager)
-    
-    # Skip tenant switching - the session is already authenticated to the correct tenant
-    # Tenant switching is unreliable due to dynamic page titles and org_switcher detection issues
-    # TODO: Implement reliable tenant switching in the future
-    logger.info(f"Proceeding with download for tenant: {request.tenant_name} (tenant switching disabled)")
-    
-    # Download the report
-    result = await automation.download_payroll_activity_summary(
-        tenant_name=request.tenant_name,
-        month=request.month,
-        year=request.year
-    )
-    
-    # Log the download
+
+    # Acquire browser lock to prevent concurrent access
+    async with browser_manager.request_lock:
+        # Ensure authenticated
+        is_auth, auth_error = await _ensure_authenticated(db)
+        if not is_auth:
+            return {"success": False, **auth_error}
+
+        automation = XeroAutomation(browser_manager)
+
+        logger.info(f"Proceeding with download for tenant: {request.tenant_name}")
+
+        # Download the report
+        result = await automation.download_payroll_activity_summary(
+            tenant_name=request.tenant_name,
+            month=request.month,
+            year=request.year
+        )
+
+    # Log the download (outside lock)
     client_result = await db.execute(
         select(Client).where(Client.tenant_id == request.tenant_id)
     )
     client = client_result.scalar_one_or_none()
     await _log_download(db, client.id if client else None, "payroll_activity_summary", result)
-    
+
     return result
 
 
@@ -223,116 +211,118 @@ async def download_consolidated_report(
         period=period
     )
     
-    is_auth, auth_error = await _ensure_authenticated(db)
-    if not is_auth:
-        return {"success": False, **auth_error}
-    
     browser_manager = await BrowserManager.get_instance()
-    automation = XeroAutomation(browser_manager)
-    file_manager = get_file_manager()
-    
-    # Step 0: Switch tenant if shortcode provided
-    if request.tenant_shortcode:
-        logger.info(f"Switching to tenant: {request.tenant_name} (shortcode: {request.tenant_shortcode})")
-        switch_result = await automation.switch_tenant(request.tenant_name, request.tenant_shortcode)
-        if not switch_result.get("success"):
-            return {
-                "success": False,
-                "error": f"Failed to switch tenant: {switch_result.get('error')}",
-                "screenshot": switch_result.get("screenshot")
-            }
-    
-    results = {
-        "success": False,
-        "tenant_name": request.tenant_name,
-        "period": period,
-        "activity_statement": None,
-        "payroll_summary": None,
-        "consolidated_file": None,
-        "errors": []
-    }
-    
-    downloaded_files = []
-    sheet_names = []
-    
-    # Step 1: Download Activity Statement
-    logger.info(f"Step 1/3: Downloading Activity Statement... tenant_shortcode={request.tenant_shortcode}")
-    activity_result = await automation.download_activity_statement(
-        tenant_name=request.tenant_name,
-        find_unfiled=request.find_unfiled,
-        period=period,
-        tenant_shortcode=request.tenant_shortcode,
-        month=request.month,
-        year=request.year
-    )
-    
-    results["activity_statement"] = activity_result
-    
-    if activity_result.get("success"):
-        downloaded_files.append(activity_result["file_path"])
-        sheet_names.append("Activity_Statement")
-        logger.info("Activity Statement downloaded successfully")
-    else:
-        results["errors"].append(f"Activity Statement failed: {activity_result.get('error')}")
-        logger.error("Activity Statement download failed", error=activity_result.get("error"))
-    
+
+    # Acquire browser lock for entire consolidated download operation
+    async with browser_manager.request_lock:
+        is_auth, auth_error = await _ensure_authenticated(db)
+        if not is_auth:
+            return {"success": False, **auth_error}
+
+        automation = XeroAutomation(browser_manager)
+        file_manager = get_file_manager()
+
+        # Step 0: Switch tenant if shortcode provided
+        if request.tenant_shortcode:
+            logger.info(f"Switching to tenant: {request.tenant_name} (shortcode: {request.tenant_shortcode})")
+            switch_result = await automation.switch_tenant(request.tenant_name, request.tenant_shortcode)
+            if not switch_result.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Failed to switch tenant: {switch_result.get('error')}",
+                    "screenshot": switch_result.get("screenshot")
+                }
+
+        results = {
+            "success": False,
+            "tenant_name": request.tenant_name,
+            "period": period,
+            "activity_statement": None,
+            "payroll_summary": None,
+            "consolidated_file": None,
+            "errors": []
+        }
+
+        downloaded_files = []
+        sheet_names = []
+
+        # Step 1: Download Activity Statement
+        logger.info(f"Step 1/3: Downloading Activity Statement... tenant_shortcode={request.tenant_shortcode}")
+        activity_result = await automation.download_activity_statement(
+            tenant_name=request.tenant_name,
+            find_unfiled=request.find_unfiled,
+            period=period,
+            tenant_shortcode=request.tenant_shortcode,
+            month=request.month,
+            year=request.year
+        )
+
+        results["activity_statement"] = activity_result
+
+        if activity_result.get("success"):
+            downloaded_files.append(activity_result["file_path"])
+            sheet_names.append("Activity_Statement")
+            logger.info("Activity Statement downloaded successfully")
+        else:
+            results["errors"].append(f"Activity Statement failed: {activity_result.get('error')}")
+            logger.error("Activity Statement download failed", error=activity_result.get("error"))
+
+        # Step 2: Download Payroll Activity Summary
+        logger.info("Step 2/3: Downloading Payroll Activity Summary...")
+        payroll_result = await automation.download_payroll_activity_summary(
+            tenant_name=request.tenant_name,
+            month=request.month,
+            year=request.year,
+            tenant_shortcode=request.tenant_shortcode
+        )
+
+        results["payroll_summary"] = payroll_result
+
+        if payroll_result.get("success"):
+            downloaded_files.append(payroll_result["file_path"])
+            sheet_names.append("Payroll_Summary")
+            logger.info("Payroll Activity Summary downloaded successfully")
+        else:
+            results["errors"].append(f"Payroll Summary failed: {payroll_result.get('error')}")
+            logger.error("Payroll Summary download failed", error=payroll_result.get("error"))
+
+    # Outside browser lock: consolidation and logging don't need browser
     client_result = await db.execute(
         select(Client).where(Client.tenant_id == request.tenant_id)
     )
     client = client_result.scalar_one_or_none()
     await _log_download(db, client.id if client else None, "activity_statement", activity_result)
-    
-    # Step 2: Download Payroll Activity Summary
-    logger.info("Step 2/3: Downloading Payroll Activity Summary...")
-    payroll_result = await automation.download_payroll_activity_summary(
-        tenant_name=request.tenant_name,
-        month=request.month,
-        year=request.year,
-        tenant_shortcode=request.tenant_shortcode
-    )
-    
-    results["payroll_summary"] = payroll_result
-    
-    if payroll_result.get("success"):
-        downloaded_files.append(payroll_result["file_path"])
-        sheet_names.append("Payroll_Summary")
-        logger.info("Payroll Activity Summary downloaded successfully")
-    else:
-        results["errors"].append(f"Payroll Summary failed: {payroll_result.get('error')}")
-        logger.error("Payroll Summary download failed", error=payroll_result.get("error"))
-    
     await _log_download(db, client.id if client else None, "payroll_activity_summary", payroll_result)
-    
+
     # Step 3: Consolidate files
     if downloaded_files:
         logger.info("Step 3/3: Consolidating reports...")
         try:
-            # Format: Consolidated_BAS_Report_{Month_Year}.xlsx
             month_year = f"{calendar.month_name[request.month]}_{request.year}"
             consolidated_filename = f"Consolidated_BAS_Report_{month_year}.xlsx"
-            
+
             consolidated_path = file_manager.consolidate_excel_files(
                 file_paths=downloaded_files,
                 output_filename=consolidated_filename,
                 sheet_names=sheet_names
             )
-            
+
             results["consolidated_file"] = {
                 "file_path": consolidated_path,
                 "file_name": consolidated_filename,
                 "sheets_count": len(downloaded_files)
             }
-            
+
             results["success"] = True
             logger.info("Consolidation complete", file=consolidated_filename)
-            
+
         except Exception as e:
             results["errors"].append(f"Consolidation failed: {str(e)}")
             logger.error("Consolidation failed", error=str(e))
             results["success"] = len(downloaded_files) > 0
     else:
         results["errors"].append("No files were downloaded successfully")
-    
+
     consolidated_log_result = {
         "success": results["success"],
         "file_path": results["consolidated_file"]["file_path"] if results["consolidated_file"] else None,
@@ -340,7 +330,7 @@ async def download_consolidated_report(
         "error": "; ".join(results["errors"]) if results["errors"] else None
     }
     await _log_download(db, client.id if client else None, "consolidated_report", consolidated_log_result)
-    
+
     return results
 
 
@@ -352,63 +342,118 @@ async def batch_download(
 ):
     """
     Download reports for multiple tenants.
-    
+
     If tenant_ids is not specified, processes all active clients in the database.
+    Each client is processed sequentially (browser can only handle one at a time).
+
+    Uses request_lock to prevent concurrent browser access.
     """
     logger.info("Batch download requested", reports=request.reports)
-    
-    # Ensure authenticated
-    is_auth, auth_error = await _ensure_authenticated(db)
-    if not is_auth:
-        return {"success": False, **auth_error}
-    
+
     # Get clients to process
     if request.tenant_ids:
         query = select(Client).where(Client.tenant_id.in_(request.tenant_ids))
     else:
         query = select(Client).where(Client.is_active == True)
-    
+
     result = await db.execute(query)
     clients = result.scalars().all()
-    
+
     if not clients:
         return {
             "success": False,
             "error": "No clients found to process"
         }
-    
-    # Get automation service
+
     browser_manager = await BrowserManager.get_instance()
-    automation = XeroAutomation(browser_manager)
-    
-    # Process each client
+
+    # Process each client sequentially with browser lock
     results = {
         "total": len(clients),
         "completed": 0,
         "failed": 0,
         "results": []
     }
-    
-    for client in clients:
-        client_result = await automation.download_reports_for_tenant(
-            tenant_id=client.tenant_id,
-            tenant_name=client.tenant_name,
-            reports=request.reports
-        )
-        
-        results["results"].append(client_result)
-        
-        if client_result.get("success"):
-            results["completed"] += 1
-        else:
-            results["failed"] += 1
-        
-        # Log each report download
-        for report_type, report_result in client_result.get("reports", {}).items():
-            await _log_download(db, client.id, report_type, report_result)
-    
+
+    async with browser_manager.request_lock:
+        # Ensure authenticated
+        is_auth, auth_error = await _ensure_authenticated(db)
+        if not is_auth:
+            return {"success": False, **auth_error}
+
+        automation = XeroAutomation(browser_manager)
+
+        for client in clients:
+            client_result = {
+                "tenant_name": client.tenant_name,
+                "tenant_id": client.tenant_id,
+                "success": False,
+                "reports": {},
+                "errors": []
+            }
+
+            try:
+                # Switch to tenant if shortcode is available
+                if client.tenant_shortcode:
+                    switch_result = await automation.switch_tenant(
+                        client.tenant_name,
+                        client.tenant_shortcode
+                    )
+                    if not switch_result.get("success"):
+                        client_result["errors"].append(f"Failed to switch tenant: {switch_result.get('error')}")
+                        results["failed"] += 1
+                        results["results"].append(client_result)
+                        continue
+
+                # Download requested reports
+                for report_type in request.reports:
+                    try:
+                        if report_type == "activity_statement":
+                            report_result = await automation.download_activity_statement(
+                                tenant_name=client.tenant_name,
+                                find_unfiled=True,
+                                period=request.period or "",
+                                tenant_shortcode=client.tenant_shortcode
+                            )
+                        elif report_type == "payroll_activity_summary":
+                            report_result = await automation.download_payroll_activity_summary(
+                                tenant_name=client.tenant_name,
+                                month=request.month,
+                                year=request.year,
+                                tenant_shortcode=client.tenant_shortcode
+                            )
+                        else:
+                            report_result = {"success": False, "error": f"Unknown report type: {report_type}"}
+
+                        client_result["reports"][report_type] = report_result
+                        await _log_download(db, client.id, report_type, report_result)
+
+                    except Exception as e:
+                        error_result = {"success": False, "error": str(e)}
+                        client_result["reports"][report_type] = error_result
+                        client_result["errors"].append(f"{report_type}: {str(e)}")
+                        await _log_download(db, client.id, report_type, error_result)
+
+                # Check if all reports succeeded
+                all_success = all(
+                    r.get("success", False)
+                    for r in client_result["reports"].values()
+                )
+                client_result["success"] = all_success
+
+                if all_success:
+                    results["completed"] += 1
+                else:
+                    results["failed"] += 1
+
+            except Exception as e:
+                client_result["errors"].append(str(e))
+                results["failed"] += 1
+
+            results["results"].append(client_result)
+
     results["success"] = results["failed"] == 0
-    
+
     return results
 
 

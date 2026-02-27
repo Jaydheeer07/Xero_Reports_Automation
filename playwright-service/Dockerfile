@@ -1,11 +1,13 @@
 # Playwright Service Dockerfile
 # Uses official Playwright Python image with browsers pre-installed
+# v1.50.0-noble uses Ubuntu 24.04 LTS (Noble) with new headless mode
 
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.50.0-noble
 
 WORKDIR /app
 
 # Install Xvfb for headed mode on Linux servers (virtual display)
+# Still needed as fallback for login if new headless mode doesn't bypass Xero's anti-bot
 RUN apt-get update && apt-get install -y xvfb x11-utils curl && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -34,9 +36,8 @@ ENV DISPLAY=:99
 EXPOSE 8000
 
 # Health check - increased start period to allow for Xvfb startup and slow DB connections
-HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 # Run with startup script that initializes Xvfb for headed browser mode
-# This is required because Xero blocks headless browsers during login
 CMD ["/app/start.sh"]

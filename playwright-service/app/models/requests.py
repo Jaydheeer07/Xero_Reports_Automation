@@ -54,6 +54,9 @@ class BatchDownloadRequest(BaseModel):
         default=["activity_statement", "payroll_summary"],
         description="List of report types to download"
     )
+    month: Optional[int] = Field(None, ge=1, le=12, description="Month (1-12) for date-based reports")
+    year: Optional[int] = Field(None, ge=2020, le=2100, description="Year for date-based reports")
+    period: Optional[str] = Field(None, description="Period string (e.g., 'October 2025') for activity statements")
 
 
 # =============================================================================
