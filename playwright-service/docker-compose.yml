@@ -20,6 +20,12 @@ services:
       - SCREENSHOT_DIR=/app/screenshots
       - SESSION_DIR=/app/sessions
       - LOG_LEVEL=INFO
+      # Xero credentials for automated login
+      - XERO_EMAIL=${XERO_EMAIL}
+      - XERO_PASSWORD=${XERO_PASSWORD}
+      - XERO_SECURITY_ANSWER_1=${XERO_SECURITY_ANSWER_1}
+      - XERO_SECURITY_ANSWER_2=${XERO_SECURITY_ANSWER_2}
+      - XERO_SECURITY_ANSWER_3=${XERO_SECURITY_ANSWER_3}
     volumes:
       - ./downloads:/app/downloads
       - ./screenshots:/app/screenshots
@@ -27,7 +33,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    shm_size: '2gb'  # Required for Playwright/Chromium
+    # Shared memory: Chromium needs this for rendering (prevents partial page loads)
+    shm_size: '2gb'
     networks:
       - xero-network
 

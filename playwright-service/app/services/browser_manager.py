@@ -112,6 +112,8 @@ class BrowserManager:
             "--disable-dev-shm-usage",         # Use /tmp instead of /dev/shm (prevents OOM in containers)
             "--disable-gpu",                   # No GPU available in server environments
             "--disable-extensions",            # No browser extensions needed
+            "--disable-software-rasterizer",   # Disable software rasterizer (use CPU rendering)
+            "--disable-gpu-compositing",       # Disable GPU compositing
         ]
 
         # Resource optimization flags for server environments
@@ -122,6 +124,7 @@ class BrowserManager:
                 "--disable-backgrounding-occluded-windows",           # Prevent throttling
                 "--disable-ipc-flooding-protection",                  # Prevent IPC throttling
                 "--disable-component-extensions-with-background-pages",  # Reduce memory
+                "--font-render-hinting=none",                         # Improve font rendering in Xvfb
             ])
 
         # Headed mode specific args (for Xvfb-based login)
