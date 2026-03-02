@@ -512,7 +512,7 @@ class XeroAuthService:
             await self.browser.initialize(headless=False)
             
             # Navigate to Xero login page
-            await self.browser.goto(XERO_LOGIN_URL, wait_until="networkidle")
+            await self.browser.goto(XERO_LOGIN_URL, wait_until="load")
             await asyncio.sleep(2)
             
             page = self.browser.page
@@ -536,8 +536,21 @@ class XeroAuthService:
             login_button = page.get_by_role("button", name="Log in")
             await login_button.click()
             
-            # Wait for MFA page to load
+            # Wait for page to respond
             await asyncio.sleep(3)
+            
+            # Check for login errors before proceeding
+            try:
+                error_message = page.locator("text=Your email or password is incorrect")
+                if await error_message.is_visible(timeout=2000):
+                    logger.error("Login failed: Invalid email or password")
+                    await self.browser.screenshot("automated_login_credentials_error")
+                    raise ValueError("Invalid email or password. Please check XERO_EMAIL and XERO_PASSWORD in .env file")
+            except Exception as e:
+                if "Invalid email or password" in str(e):
+                    raise
+                # No error message found, continue
+                logger.debug("No login error detected, proceeding to MFA")
             
             # Step 4: Click "Use another authentication method"
             logger.info("Selecting alternative authentication method")
