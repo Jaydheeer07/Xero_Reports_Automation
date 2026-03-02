@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Playwright
     playwright_timeout: int = 30000  # milliseconds
     headless: bool = True  # Set to False for manual auth setup
+
+    # CORS - comma-separated list of allowed origins (override in .env for production)
+    allowed_origins: str = "http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000"
     
     # Directories
     download_dir: str = "/app/downloads"
