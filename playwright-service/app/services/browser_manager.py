@@ -109,7 +109,11 @@ class BrowserManager:
             "--disable-blink-features=AutomationControlled",  # Hide automation signals
             "--no-sandbox",                    # Required in Docker containers
             "--disable-setuid-sandbox",        # Required in Docker containers
-            "--disable-dev-shm-usage",         # Use /tmp instead of /dev/shm (prevents OOM in containers)
+            # NOTE: --disable-dev-shm-usage is intentionally omitted.
+            # We allocate shm_size: '2gb' in docker-compose so Chromium can use
+            # /dev/shm for rendering. Adding --disable-dev-shm-usage would tell
+            # Chromium to ignore /dev/shm entirely (using /tmp instead), which
+            # causes partial page rendering on low-resource servers.
             "--disable-gpu",                   # No GPU available in server environments
             "--disable-extensions",            # No browser extensions needed
             "--disable-software-rasterizer",   # Disable software rasterizer (use CPU rendering)
