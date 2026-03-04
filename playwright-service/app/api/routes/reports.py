@@ -523,6 +523,158 @@ async def download_file(filename: str, api_key: str = Depends(verify_api_key)):
     )
 
 
+import asyncio as _asyncio
+from app.db.connection import async_session_maker as AsyncSessionLocal
+
+
+@router.post("/run")
+async def run_report(
+    request: ConsolidatedReportRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Start a consolidated report job in the background.
+    Returns immediately with a job_id. Poll GET /api/reports/job/{job_id} for status.
+    """
+    import calendar
+
+    job_id = _create_job()
+    period = request.period or f"{calendar.month_name[request.month]} {request.year}"
+
+    _update_job(job_id, f"Queued: {request.tenant_name} — {period}")
+
+    # Kick off in the background (asyncio task, not BackgroundTasks,
+    # so it can create its own db session independently of the request lifecycle)
+    _asyncio.create_task(_run_consolidated_job(job_id, request))
+
+    return {"job_id": job_id, "tenant_name": request.tenant_name, "period": period}
+
+
+async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest) -> None:
+    """Background coroutine that runs the full consolidated report workflow."""
+    import calendar
+    from app.services.file_manager import get_file_manager
+
+    period = request.period or f"{calendar.month_name[request.month]} {request.year}"
+
+    # Create a fresh DB session for the background task
+    async with AsyncSessionLocal() as db:
+        try:
+            browser_manager = await BrowserManager.get_instance()
+
+            async with browser_manager.request_lock:
+                # Step 1: Auth
+                _update_job(job_id, "Ensuring authenticated with Xero...")
+                is_auth, auth_error = await _ensure_authenticated(db)
+                if not is_auth:
+                    _finish_job(job_id, False, auth_error)
+                    return
+
+                automation = XeroAutomation(browser_manager)
+
+                # Step 2: Switch tenant
+                if request.tenant_shortcode:
+                    _update_job(job_id, f"Switching to {request.tenant_name}...")
+                    switch_result = await automation.switch_tenant(
+                        request.tenant_name, request.tenant_shortcode
+                    )
+                    if not switch_result.get("success"):
+                        _finish_job(job_id, False, {"error": f"Failed to switch tenant: {switch_result.get('error')}"})
+                        return
+
+                # Step 3: Activity Statement
+                _update_job(job_id, "Downloading Activity Statement...")
+                activity_result = await automation.download_activity_statement(
+                    tenant_name=request.tenant_name,
+                    find_unfiled=request.find_unfiled,
+                    period=period,
+                    tenant_shortcode=request.tenant_shortcode,
+                    month=request.month,
+                    year=request.year,
+                )
+
+                # Step 4: Payroll Summary
+                _update_job(job_id, "Downloading Payroll Activity Summary...")
+                payroll_result = await automation.download_payroll_activity_summary(
+                    tenant_name=request.tenant_name,
+                    month=request.month,
+                    year=request.year,
+                    tenant_shortcode=request.tenant_shortcode,
+                )
+
+            # Step 5: Consolidate (outside browser lock)
+            downloaded_files = []
+            sheet_names = []
+            errors = []
+
+            if activity_result.get("success"):
+                downloaded_files.append(activity_result["file_path"])
+                sheet_names.append("Activity_Statement")
+            else:
+                errors.append(f"Activity Statement: {activity_result.get('error')}")
+
+            if payroll_result.get("success"):
+                downloaded_files.append(payroll_result["file_path"])
+                sheet_names.append("Payroll_Summary")
+            else:
+                errors.append(f"Payroll Summary: {payroll_result.get('error')}")
+
+            consolidated_file = None
+            if downloaded_files:
+                _update_job(job_id, "Consolidating reports into single Excel file...")
+                file_manager = get_file_manager()
+                month_year = f"{calendar.month_name[request.month]}_{request.year}"
+                consolidated_filename = f"Consolidated_BAS_Report_{month_year}.xlsx"
+                consolidated_path = file_manager.consolidate_excel_files(
+                    file_paths=downloaded_files,
+                    output_filename=consolidated_filename,
+                    sheet_names=sheet_names,
+                )
+                consolidated_file = {"file_path": consolidated_path, "file_name": consolidated_filename}
+
+            # Log to Supabase
+            from sqlalchemy import select as _select
+            client_result = await db.execute(_select(Client).where(Client.tenant_id == request.tenant_id))
+            client = client_result.scalar_one_or_none()
+            await _log_download(db, client.id if client else None, "activity_statement", activity_result)
+            await _log_download(db, client.id if client else None, "payroll_activity_summary", payroll_result)
+
+            success = len(downloaded_files) > 0
+            result = {
+                "consolidated_file": consolidated_file,
+                "errors": errors,
+                "activity_statement": activity_result,
+                "payroll_summary": payroll_result,
+            }
+            if errors:
+                result["error"] = "; ".join(errors)
+
+            _finish_job(job_id, success, result)
+            _update_job(job_id, f"Done — {consolidated_file['file_name']}" if consolidated_file else "Done with errors")
+
+        except Exception as e:
+            logger.error("Background job failed", job_id=job_id, error=str(e))
+            _finish_job(job_id, False, {"error": str(e)})
+
+
+@router.get("/job/{job_id}")
+async def get_job_status(job_id: str, api_key: str = Depends(verify_api_key)):
+    """
+    Poll the status of a background report job.
+    Returns 404 if the job has expired (> 1 hour old) or never existed.
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "message": job["message"],
+        "steps": job["steps"],
+        "result": job["result"],
+    }
+
+
 @router.get("/files")
 async def list_downloaded_files(api_key: str = Depends(verify_api_key)):
     """
