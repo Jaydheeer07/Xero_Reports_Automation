@@ -22,16 +22,27 @@ to `http://<your-vm-ip>:8000`.
 
 ## Prerequisites
 
-### 1. Install Python 3.11+
+### 1. Install Python 3.12
 
-Download from https://www.python.org/downloads/
+**Use Python 3.12, not 3.13.**
 
-During installation, check **"Add Python to PATH"**.
+Three packages in `requirements.txt` are not yet compatible with Python 3.13:
+- `cryptography==41.0.7` (3.13 support added in 42.0.0)
+- `asyncpg==0.29.0` (3.13 support added in 0.30.0)
+- `pydantic==2.5.3` (3.13 support added in 2.8.0)
 
-Verify in PowerShell (run as Administrator):
+If you already have Python 3.13 installed, keep it — multiple versions coexist
+on Windows via the Python Launcher. You just need to also install 3.12.
+
+Download Python 3.12 from https://www.python.org/downloads/release/python-3129/
+(scroll to "Files", pick "Windows installer (64-bit)")
+
+During installation, check **"Add Python to PATH"** and **"Install for all users"**.
+
+Verify both versions are available in PowerShell:
 ```powershell
-python --version
-# Should show: Python 3.11.x or 3.12.x
+py -3.12 --version   # Should show: Python 3.12.x
+py -3.13 --version   # Your existing install (optional, still works for other things)
 ```
 
 ### 2. Install Git
@@ -83,9 +94,11 @@ C:\xero-service\
 
 ### 2. Create a Virtual Environment
 
+Use the `py` launcher to explicitly target Python 3.12:
+
 ```powershell
 cd C:\xero-service
-python -m venv venv
+py -3.12 -m venv venv
 .\venv\Scripts\Activate.ps1
 ```
 
@@ -93,7 +106,13 @@ If you get an execution policy error:
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
-Then try again.
+Then try the `py -3.12 -m venv venv` command again.
+
+Confirm the venv is using 3.12:
+```powershell
+python --version
+# Should show: Python 3.12.x
+```
 
 ### 3. Install Dependencies
 
@@ -192,6 +211,45 @@ curl http://localhost:8000/api/health
 Expected response: `{"status": "healthy", ...}`
 
 Press `Ctrl+C` to stop it once confirmed working.
+
+---
+
+## Install the UI and Tray App
+
+### 1. Install new dependencies
+
+```powershell
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 2. Create the desktop shortcut (one-time)
+
+```powershell
+python create_shortcut.py
+```
+
+Expected: "Xero Reports" shortcut appears on your desktop.
+
+### 3. Start the app
+
+Double-click the **Xero Reports** shortcut on your desktop.
+
+- The app starts silently (no terminal window)
+- A tray icon appears in the Windows taskbar (bottom-right)
+- Your browser opens automatically to `http://localhost:8000`
+
+### 4. Use the UI
+
+1. Select an organisation from the searchable dropdown
+2. Pick the month and year
+3. Click **Run Report**
+4. Watch the progress steps update live
+5. When done, the file is saved to `C:\xero-service\downloads\`
+
+### 5. Stop the app
+
+Right-click the tray icon → **Quit**
 
 ---
 
@@ -359,6 +417,21 @@ taskkill /PID <pid> /F
 3. Test from the n8n machine: `curl http://<vm-ip>:8000/api/health`
 4. Check the firewall rule exists: `Get-NetFirewallRule -DisplayName "Xero Playwright Service"`
 5. If the VM is behind a router/NAT, you may also need a port forward rule on the router
+
+### pip install fails with "No matching distribution" or build errors
+
+You are probably using Python 3.13. Check which Python the venv was built with:
+```powershell
+python --version
+```
+If it shows 3.13, recreate the venv with 3.12:
+```powershell
+deactivate
+Remove-Item -Recurse -Force venv
+py -3.12 -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
 ### Chromium not found
 
