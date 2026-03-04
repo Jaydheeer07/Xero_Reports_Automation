@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os as _os
 import structlog
 import logging
 import os
@@ -129,11 +131,8 @@ app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])
 
 
-@app.get("/")
-async def root():
-    """Root endpoint."""
-    return {
-        "service": "Xero Reports Automation",
-        "version": "1.1.0",
-        "docs": "/docs"
-    }
+# Serve frontend UI at /
+# Must be mounted LAST so it doesn't shadow /api/* routes
+_frontend_dir = _os.path.join(_os.path.dirname(__file__), "..", "frontend")
+if _os.path.isdir(_frontend_dir):
+    app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
