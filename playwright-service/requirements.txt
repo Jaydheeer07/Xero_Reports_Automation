@@ -28,3 +28,10 @@ structlog==24.1.0
 
 # Excel processing
 openpyxl==3.1.2
+
+# System tray app
+pystray==0.19.5
+Pillow>=10.0.0
+
+# Desktop shortcut creation (Windows only, used by create_shortcut.py)
+pywin32>=306
