@@ -26,6 +26,49 @@ router = APIRouter()
 logger = structlog.get_logger()
 settings = get_settings()
 
+import uuid
+from datetime import datetime, timedelta
+
+# --- In-memory background job registry ---
+# Stores job state during execution. Jobs auto-expire after 1 hour.
+# Supabase download_logs is the permanent record; this dict is only for polling.
+_jobs: dict[str, dict] = {}
+_JOB_TTL_HOURS = 1
+
+
+def _create_job() -> str:
+    """Create a new job entry and return its job_id. Also purges expired jobs."""
+    # Lazy cleanup: remove jobs older than TTL
+    cutoff = datetime.utcnow() - timedelta(hours=_JOB_TTL_HOURS)
+    expired = [jid for jid, j in _jobs.items() if j.get("created_at", datetime.utcnow()) < cutoff]
+    for jid in expired:
+        del _jobs[jid]
+
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {
+        "status": "running",
+        "message": "Starting...",
+        "steps": [],
+        "result": None,
+        "created_at": datetime.utcnow(),
+    }
+    return job_id
+
+
+def _update_job(job_id: str, message: str) -> None:
+    """Append a step message to the job and update current message."""
+    if job_id in _jobs:
+        _jobs[job_id]["message"] = message
+        _jobs[job_id]["steps"].append(message)
+
+
+def _finish_job(job_id: str, success: bool, result: dict) -> None:
+    """Mark a job as complete."""
+    if job_id in _jobs:
+        _jobs[job_id]["status"] = "success" if success else "failed"
+        _jobs[job_id]["message"] = "Complete" if success else result.get("error", "Failed")
+        _jobs[job_id]["result"] = result
+
 
 async def _ensure_authenticated(db: AsyncSession) -> tuple[bool, dict]:
     """Ensure browser is authenticated with Xero."""

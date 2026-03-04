@@ -109,3 +109,16 @@ async def restart_browser(headless: bool = True, api_key: str = Depends(verify_a
             "success": False,
             "error": str(e)
         }
+
+
+from app.config import get_settings as _get_settings
+
+
+@router.get("/ui-config")
+async def ui_config():
+    """
+    Return configuration needed by the frontend UI.
+    No auth required — this endpoint is only accessible on localhost.
+    """
+    s = _get_settings()
+    return {"api_key": s.api_key}
