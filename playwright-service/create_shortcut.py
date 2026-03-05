@@ -22,7 +22,11 @@ def main():
 
     # Paths
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    tray_script = os.path.join(base_dir, "tray.py")
+
+    # Allow overriding tray.py path via environment variable (useful for VMs with different paths)
+    tray_script = os.environ.get("XERO_TRAY_PATH") or os.path.join(base_dir, "tray.py")
+    tray_script = os.path.abspath(tray_script)
+
     icon_path = os.path.join(base_dir, "assets", "icon.ico")
 
     # Find pythonw.exe (no-console Python)
