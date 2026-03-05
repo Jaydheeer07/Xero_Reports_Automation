@@ -30,6 +30,8 @@ from app.config import get_settings
 logger = structlog.get_logger()
 settings = get_settings()
 
+CHROME_DEBUG_PORT = 9222  # Must match tray.py CHROME_DEBUG_PORT
+
 
 class BrowserManager:
     """
@@ -54,6 +56,7 @@ class BrowserManager:
         self._page: Optional[Page] = None
         self._is_initialized = False
         self._headless = settings.headless
+        self._owns_browser = False  # False when connected via connect_over_cdp (tray owns Chrome)
         # Request-level lock: prevents concurrent API calls from fighting over the browser
         self._request_lock = asyncio.Lock()
 
@@ -146,43 +149,84 @@ class BrowserManager:
         Initialize the browser.
 
         Args:
-            headless: If True, run in headless mode. If False, show browser window.
+            headless: If True, launch headless Chrome for automation.
+                      If False, connect to the existing Chrome window launched by tray.py
+                      via remote debugging port (bypasses Akamai bot detection).
         """
         if self._is_initialized:
             logger.warning("Browser already initialized, closing existing instance")
             await self.close()
 
         try:
-            logger.info("Initializing Playwright browser", headless=headless)
-
             self._playwright = await async_playwright().start()
 
-            launch_args = self._get_launch_args(headless)
+            if not headless:
+                # Login mode: connect to existing Chrome launched by tray.py.
+                # This bypasses Akamai bot detection — Akamai sees a browser that was
+                # already naturally running before any Xero visit.
+                logger.info("Connecting to existing Chrome via CDP", port=CHROME_DEBUG_PORT)
+                for attempt in range(10):
+                    try:
+                        self._browser = await self._playwright.chromium.connect_over_cdp(
+                            f"http://localhost:{CHROME_DEBUG_PORT}"
+                        )
+                        break
+                    except Exception:
+                        if attempt == 9:
+                            raise RuntimeError(
+                                f"Could not connect to Chrome debug port {CHROME_DEBUG_PORT}. "
+                                "Please start the app via tray.py before running automated login."
+                            )
+                        await asyncio.sleep(1.0)
 
-            self._browser = await self._playwright.chromium.launch(
-                headless=headless,
-                args=launch_args,
-                channel="chrome",  # Use installed Chrome to bypass Akamai bot detection (sec-ch-ua: "Google Chrome" vs "Chromium")
-            )
+                self._context = await self._browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    accept_downloads=True,
+                )
 
-            # Create browser context with download handling
-            # User agent matches a recent Chrome version for anti-bot bypass
-            self._context = await self._browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                accept_downloads=True,
-            )
+                # Patch any remaining CDP automation signals that Akamai checks
+                await self._context.add_init_script("""
+                    (() => {
+                        try { delete window.__playwright__binding__; } catch(e) {}
+                        try { delete window.__pwInitScripts__; } catch(e) {}
+                        try { delete window.__playwright_evaluator__; } catch(e) {}
+                        try {
+                            Object.defineProperty(navigator, 'webdriver', {
+                                get: () => undefined, configurable: true
+                            });
+                        } catch(e) {}
+                        if (!window.chrome) window.chrome = {};
+                        if (!window.chrome.runtime) window.chrome.runtime = {};
+                    })();
+                """)
 
-            # Set default timeout
+                self._owns_browser = False
+                logger.info("Connected to existing Chrome via CDP")
+
+            else:
+                # Automation mode: launch headless Chrome for report downloads etc.
+                # These operations use saved session cookies and never hit the login page.
+                launch_args = self._get_launch_args(headless)
+                self._browser = await self._playwright.chromium.launch(
+                    headless=True,
+                    args=launch_args,
+                    channel="chrome",
+                )
+
+                self._context = await self._browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    accept_downloads=True,
+                )
+
+                self._owns_browser = True
+                logger.info("Launched headless Chrome", args_count=len(launch_args))
+
             self._context.set_default_timeout(settings.playwright_timeout)
-
-            # Create initial page
             self._page = await self._context.new_page()
-
             self._is_initialized = True
             self._headless = headless
-
-            logger.info("Browser initialized successfully", headless=headless, args_count=len(launch_args))
 
         except Exception as e:
             logger.error("Failed to initialize browser", error=str(e))
@@ -222,6 +266,7 @@ class BrowserManager:
             self._playwright = None
 
         self._is_initialized = False
+        self._owns_browser = False
         logger.info("Force cleanup completed")
 
     async def new_page(self) -> Page:
@@ -349,15 +394,18 @@ class BrowserManager:
                 await self._context.close()
                 self._context = None
 
-            if self._browser:
+            if self._browser and self._owns_browser:
+                # Only close the browser process if we launched it.
+                # When connected via connect_over_cdp, tray.py owns the Chrome process.
                 await self._browser.close()
-                self._browser = None
+            self._browser = None
 
             if self._playwright:
                 await self._playwright.stop()
                 self._playwright = None
 
             self._is_initialized = False
+            self._owns_browser = False
             logger.info("Browser closed successfully")
 
         except Exception as e:

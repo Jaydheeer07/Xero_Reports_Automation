@@ -14,6 +14,7 @@ import webbrowser
 import time
 import os
 import sys
+import subprocess
 
 import uvicorn
 import pystray
@@ -26,6 +27,42 @@ HOST = "0.0.0.0"
 # Path helpers
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _ICON_PATH = os.path.join(_BASE, "assets", "icon.ico")
+
+# Chrome remote debugging — Playwright connects to this port for bot-detection bypass
+CHROME_DEBUG_PORT = 9222
+CHROME_PROFILE_DIR = os.path.join(_BASE, ".xero-chrome-profile")
+
+_chrome_process = None
+
+
+def _find_chrome() -> str | None:
+    """Find Chrome executable on Windows via common paths."""
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _launch_chrome() -> None:
+    """Launch Chrome with remote debugging so Playwright can connect to it later."""
+    global _chrome_process
+    chrome_exe = _find_chrome()
+    if not chrome_exe:
+        webbrowser.open(APP_URL)
+        return
+    _chrome_process = subprocess.Popen([
+        chrome_exe,
+        f"--remote-debugging-port={CHROME_DEBUG_PORT}",
+        f"--user-data-dir={CHROME_PROFILE_DIR}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        APP_URL,
+    ])
 
 
 def _make_icon_image() -> Image.Image:
@@ -66,6 +103,9 @@ def _open_ui(icon, item):
 
 
 def _quit_app(icon, item):
+    global _chrome_process
+    if _chrome_process:
+        _chrome_process.terminate()
     icon.stop()
     # uvicorn doesn't have a clean shutdown from outside thread;
     # os._exit is acceptable for a tray app
@@ -88,8 +128,8 @@ def main():
         except Exception:
             pass
 
-    # Auto-open browser on first start
-    webbrowser.open(APP_URL)
+    # Auto-open browser on first start (with remote debugging port for Playwright)
+    _launch_chrome()
 
     # Build tray icon
     icon_image = _load_icon()
