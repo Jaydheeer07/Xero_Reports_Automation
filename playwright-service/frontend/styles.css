@@ -25,6 +25,14 @@ body {
 h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 4px; }
 .subtitle { color: #718096; font-size: 0.9rem; margin-bottom: 24px; }
 
+.header-actions {
+  float: right;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -33,12 +41,24 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 4px; }
   font-weight: 500;
   padding: 4px 10px;
   border-radius: 999px;
-  float: right;
-  margin-top: 4px;
 }
 .status-badge.ok { background: #c6f6d5; color: #276749; }
 .status-badge.error { background: #fed7d7; color: #9b2c2c; }
 .status-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+.login-btn {
+  width: auto;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-top: 0;
+  background: white;
+  color: #4299e1;
+  border: 1.5px solid #4299e1;
+  border-radius: 999px;
+}
+.login-btn:hover { background: #ebf8ff; }
+.login-btn:disabled { background: #f7fafc; color: #a0aec0; border-color: #e2e8f0; cursor: not-allowed; }
 
 .form-group { margin-bottom: 18px; }
 label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #4a5568; }

@@ -31,6 +31,7 @@ const $ = id => document.getElementById(id);
 let currentJobId = null;
 let pollInterval = null;
 let clientMap = {};  // tenant_name → { tenant_id, tenant_shortcode }
+let isLoggedIn = false;  // tracks current auth state for finishRun
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
@@ -40,23 +41,45 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadRecentRuns();
   populateYears();
   $('run-btn').addEventListener('click', handleRun);
+  $('login-btn').addEventListener('click', handleLogin);
 });
 
 async function loadAuthStatus() {
   try {
     const status = await API.get('/api/auth/status');
+    isLoggedIn = status.logged_in;
     const badge = $('auth-badge');
     if (status.logged_in) {
       badge.className = 'status-badge ok';
       badge.innerHTML = '<span class="dot"></span> Logged In';
+      $('login-btn').style.display = 'none';
+      $('run-btn').disabled = false;
     } else {
       badge.className = 'status-badge error';
       badge.innerHTML = '<span class="dot"></span> Not Logged In';
+      $('login-btn').style.display = '';
+      $('run-btn').disabled = true;
     }
   } catch {
+    isLoggedIn = false;
     $('auth-badge').className = 'status-badge error';
     $('auth-badge').innerHTML = '<span class="dot"></span> Unknown';
+    $('login-btn').style.display = '';
+    $('run-btn').disabled = true;
   }
+}
+
+async function handleLogin() {
+  const btn = $('login-btn');
+  btn.disabled = true;
+  btn.textContent = 'Logging in...';
+  try {
+    await API.post('/api/auth/automated-login', {});
+  } catch (e) {
+    console.error('Login failed:', e);
+  }
+  btn.textContent = 'Login';
+  await loadAuthStatus();
 }
 
 async function loadClients() {
@@ -201,7 +224,7 @@ function addStep(msg, cls = '') {
 }
 
 function finishRun(success, fileName, errors) {
-  $('run-btn').disabled = false;
+  $('run-btn').disabled = !isLoggedIn;
   $('run-btn').textContent = 'Run Report';
   const box = $('result-box');
   box.style.display = 'block';

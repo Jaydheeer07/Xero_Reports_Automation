@@ -33,8 +33,15 @@ def main():
         pythonw = sys.executable
         print("WARNING: pythonw.exe not found, using python.exe (terminal may flash briefly)")
 
-    # Desktop path
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    # Desktop path — use registry to support OneDrive-relocated desktops
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        desktop = winreg.QueryValueEx(key, "Desktop")[0]
+        winreg.CloseKey(key)
+    except Exception:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
 
     # Create shortcut
     shell = win32com.client.Dispatch("WScript.Shell")
@@ -48,9 +55,9 @@ def main():
         shortcut.IconLocation = icon_path
     shortcut.Save()
 
-    print(f"✓ Shortcut created: {shortcut_path}")
-    print(f"  → Runs: {pythonw} \"{tray_script}\"")
-    print(f"  → Working dir: {base_dir}")
+    print(f"Shortcut created: {shortcut_path}")
+    print(f"  Runs: {pythonw} \"{tray_script}\"")
+    print(f"  Working dir: {base_dir}")
     print()
     print("Double-click 'Xero Reports' on your desktop to start the app.")
 
