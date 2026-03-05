@@ -162,6 +162,7 @@ class BrowserManager:
             self._browser = await self._playwright.chromium.launch(
                 headless=headless,
                 args=launch_args,
+                channel="chrome",  # Use installed Chrome to bypass Akamai bot detection (sec-ch-ua: "Google Chrome" vs "Chromium")
             )
 
             # Create browser context with download handling
