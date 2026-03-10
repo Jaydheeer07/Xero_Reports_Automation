@@ -61,6 +61,7 @@ def _launch_chrome() -> None:
         f"--user-data-dir={CHROME_PROFILE_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--start-maximized",  # Ensures outerWidth == screen width, avoiding Akamai viewport mismatch
         APP_URL,
     ])
 

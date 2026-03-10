@@ -18,7 +18,7 @@ Run with: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 (without --reload)
 """
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+from patchright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 from typing import Optional, Callable, Any
 import structlog
 import asyncio
@@ -179,13 +179,18 @@ class BrowserManager:
                             )
                         await asyncio.sleep(1.0)
 
+                # viewport=None: let Chrome window size dictate the viewport.
+                # Avoids outerWidth < innerWidth mismatch that Akamai flags as bot.
+                # Chrome is launched with --start-maximized so the window fills the screen.
                 self._context = await self._browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
+                    viewport=None,
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                     accept_downloads=True,
                 )
 
-                # Patch any remaining CDP automation signals that Akamai checks
+                # Belt-and-suspenders: remove any remaining CDP automation signals Akamai checks.
+                # Patchright already handles Runtime.enable at the protocol level, but these
+                # JS-level patches provide extra coverage.
                 await self._context.add_init_script("""
                     (() => {
                         try { delete window.__playwright__binding__; } catch(e) {}

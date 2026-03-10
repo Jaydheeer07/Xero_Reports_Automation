@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import os as _os
 import structlog
@@ -134,5 +135,13 @@ app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])
 # Serve frontend UI at /
 # Must be mounted LAST so it doesn't shadow /api/* routes
 _frontend_dir = _os.path.join(_os.path.dirname(__file__), "..", "frontend")
+_frontend_index = _os.path.join(_frontend_dir, "index.html")
+
+
+@app.get("/", include_in_schema=False)
+async def frontend_index():
+    return FileResponse(_frontend_index)
+
+
 if _os.path.isdir(_frontend_dir):
     app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")

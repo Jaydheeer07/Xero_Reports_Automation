@@ -3,10 +3,10 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 
-# Playwright for browser automation
-# v1.50+ includes new headless mode (same rendering as headed mode)
-# which bypasses anti-bot detection without needing Xvfb for most operations
-playwright==1.50.0
+# Patchright for browser automation (patched Playwright drop-in replacement)
+# Fixes Runtime.enable CDP leak that Akamai bot detection checks for.
+# Drop-in replacement: same API as playwright, just change the import.
+patchright
 
 # Database
 asyncpg==0.29.0
