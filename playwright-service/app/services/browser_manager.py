@@ -425,6 +425,32 @@ class BrowserManager:
 
         return status
 
+    async def disconnect(self) -> None:
+        """Disconnect from Chrome without closing any pages or the browser.
+
+        Drops the CDP WebSocket connection so Akamai cannot detect an
+        active automation client, but leaves Chrome and all its tabs
+        running untouched.  The anti-detection init scripts already
+        injected into loaded pages persist in their JS contexts.
+        """
+        logger.info("Disconnecting CDP session (Chrome stays running)")
+        # Drop Python references without closing anything in Chrome
+        self._page = None
+        self._context = None
+        self._browser = None
+
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+        self._is_initialized = False
+        self._owns_browser = False
+        self._owns_context = True
+        logger.info("CDP session disconnected")
+
     async def close(self) -> None:
         """Close the browser and cleanup resources."""
         logger.info("Closing browser")

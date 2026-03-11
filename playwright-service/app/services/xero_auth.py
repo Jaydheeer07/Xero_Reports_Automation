@@ -46,25 +46,41 @@ class XeroAuthService:
         self.browser = browser_manager
     
     async def start_manual_login(self) -> dict:
-        """Open Xero login page in Chrome WITHOUT any CDP connection.
+        """Open Xero login in Chrome with anti-detection scripts, then disconnect CDP.
 
-        Uses the DevTools HTTP API to open a new tab, so no automation
-        scripts are injected and Akamai cannot detect automation.
-        The CDP WebSocket connection is deferred to complete_login().
+        Flow:
+        1. Connect Patchright via CDP (injects anti-detection init scripts)
+        2. Navigate to the Xero login page (Akamai sees clean fingerprint)
+        3. Disconnect CDP WebSocket (so Akamai can't detect it during credential entry)
+        4. User logs in manually with zero automation connection active
         """
         try:
-            tab_info = await self.browser.open_tab_via_devtools(XERO_LOGIN_URL)
-            logger.info("Manual login started - tab opened without CDP")
+            # Connect CDP — this injects Patchright's anti-detection scripts
+            await self.browser.initialize(headless=False)
+
+            # Navigate to Xero login — init scripts mask automation signals
+            await self.browser.goto(XERO_LOGIN_URL, wait_until="networkidle")
+
+            logger.info("Login page loaded, disconnecting CDP before credential entry")
+
+            # Disconnect CDP — drops the WebSocket so Akamai can't detect it
+            # during credential entry.  Chrome and the login tab stay open.
+            await self.browser.disconnect()
+
             return {
                 "success": True,
                 "status": "waiting_for_login",
                 "message": "Xero login page opened. Please log in manually.",
-                "tab_id": tab_info.get("id"),
             }
         except Exception as e:
             import traceback
             error_msg = str(e) if str(e) else repr(e)
-            logger.error("Failed to open login tab", error=error_msg, traceback=traceback.format_exc())
+            logger.error("Failed to start manual login", error=error_msg, traceback=traceback.format_exc())
+            # Clean up if something went wrong
+            try:
+                await self.browser.disconnect()
+            except Exception:
+                pass
             return {
                 "success": False,
                 "status": "error",
