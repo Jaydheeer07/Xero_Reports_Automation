@@ -99,6 +99,14 @@ class XeroAuthService:
             if not self.browser.is_initialized:
                 await self.browser.initialize(headless=False)
 
+            # initialize() creates a new blank tab, but the user logged in
+            # on an existing Xero tab.  Find and switch to it.
+            xero_page = await self.browser.find_page_by_url("xero.com")
+            if xero_page:
+                await self.browser.switch_to_page(xero_page)
+            else:
+                logger.warning("No Xero tab found after CDP reconnect")
+
             # Check if we're on a Xero app page (logged in)
             is_logged_in = await self._check_logged_in()
 

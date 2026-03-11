@@ -313,6 +313,42 @@ class BrowserManager:
         self._owns_context = True
         logger.info("Force cleanup completed")
 
+    async def find_page_by_url(self, url_pattern: str) -> Optional[Page]:
+        """Find an existing page whose URL contains the given pattern.
+
+        Searches all pages in the current context and returns the first
+        match.  Useful after reconnecting CDP to locate the tab the user
+        was working in.
+
+        Args:
+            url_pattern: Substring to match against page URLs.
+
+        Returns:
+            The matching Page, or None if no match found.
+        """
+        if not self._context:
+            return None
+        for page in self._context.pages:
+            if url_pattern in page.url:
+                logger.info("Found existing page", url=page.url, pattern=url_pattern)
+                return page
+        return None
+
+    async def switch_to_page(self, page: Page) -> None:
+        """Set an existing page as the active page.
+
+        If the current active page is about:blank, it is closed first
+        to avoid leaving orphan tabs.
+        """
+        if self._page and self._page != page:
+            try:
+                if self._page.url == "about:blank" and not self._page.is_closed():
+                    await self._page.close()
+            except Exception:
+                pass
+        self._page = page
+        logger.info("Switched active page", url=page.url)
+
     async def new_page(self) -> Page:
         """Create a new page in the current context."""
         if not self._context:
