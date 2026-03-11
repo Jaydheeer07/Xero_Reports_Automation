@@ -41,7 +41,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadRecentRuns();
   populateYears();
   $('run-btn').addEventListener('click', handleRun);
-  $('login-btn').addEventListener('click', handleLogin);
+  // Use .onclick (not addEventListener) so Phase 2 can swap the handler to handleCompleteLogin cleanly
+  $('login-btn').onclick = handleLogin;
 });
 
 async function loadAuthStatus() {
@@ -72,14 +73,57 @@ async function loadAuthStatus() {
 async function handleLogin() {
   const btn = $('login-btn');
   btn.disabled = true;
-  btn.textContent = 'Logging in...';
+  btn.textContent = 'Opening Xero...';
+  hideLoginInstruction();
   try {
-    await API.post('/api/auth/automated-login', {});
+    await API.post('/api/auth/setup', {});
+    btn.textContent = 'Complete Login';
+    btn.onclick = handleCompleteLogin;
+    btn.disabled = false;
+    showLoginInstruction('Log into Xero in the browser window, then click Complete Login.');
   } catch (e) {
-    console.error('Login failed:', e);
+    console.error('Setup failed:', e);
+    btn.textContent = 'Login';
+    btn.disabled = false;
+    showLoginInstruction('Failed to start login. Check the server is running and try again.', true);
   }
-  btn.textContent = 'Login';
-  await loadAuthStatus();
+}
+
+async function handleCompleteLogin() {
+  const btn = $('login-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving session...';
+  try {
+    const result = await API.post('/api/auth/complete', {});
+    if (result.success) {
+      hideLoginInstruction();
+      await loadAuthStatus();
+      btn.onclick = handleLogin;
+    } else {
+      btn.textContent = 'Complete Login';
+      btn.disabled = false;
+      showLoginInstruction('Login not detected yet — please finish logging in and try again.', true);
+    }
+  } catch (e) {
+    console.error('Complete login failed:', e);
+    btn.textContent = 'Complete Login';
+    btn.disabled = false;
+    // Intentionally keep btn.onclick = handleCompleteLogin so user can retry without restarting
+    showLoginInstruction('Error saving session. Please try again.', true);
+  }
+}
+
+function showLoginInstruction(msg, isError = false) {
+  const el = $('login-instruction');
+  el.textContent = msg;
+  el.className = isError ? 'login-hint error' : 'login-hint';
+  el.style.display = 'block';
+}
+
+function hideLoginInstruction() {
+  const el = $('login-instruction');
+  el.style.display = 'none';
+  el.textContent = '';
 }
 
 async function loadClients() {

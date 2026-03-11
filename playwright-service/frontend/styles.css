@@ -123,3 +123,16 @@ tr:last-child td { border-bottom: none; }
 .badge.failed { background: #fed7d7; color: #9b2c2c; }
 .badge.running { background: #bee3f8; color: #2b6cb0; }
 .empty-row td { color: #a0aec0; text-align: center; padding: 20px; }
+
+/* Login instruction hint */
+.login-hint {
+  font-size: 0.82rem;
+  color: #4a5568;
+  margin-top: 6px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+  clear: both;
+}
+.login-hint.error {
+  color: #c53030;
+}
