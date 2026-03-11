@@ -531,13 +531,51 @@ class XeroAuthService:
             await password_input.click()
             await password_input.fill(settings.xero_password)
             
-            # Step 3: Click Log in button
+            # Step 3: Click Log in button - set up new-window listeners first
+            # Xero may open a new window after credentials are submitted
             logger.info("Clicking Log in button")
             login_button = page.get_by_role("button", name="Log in")
+
+            new_pages_from_context = []
+            popups_from_page = []
+
+            def _on_context_page(new_p):
+                new_pages_from_context.append(new_p)
+
+            def _on_popup(popup_p):
+                popups_from_page.append(popup_p)
+
+            self.browser.context.on("page", _on_context_page)
+            page.on("popup", _on_popup)
+
             await login_button.click()
-            
-            # Wait for page to respond
+
+            # Wait for page to respond (new window may open)
             await asyncio.sleep(3)
+
+            self.browser.context.remove_listener("page", _on_context_page)
+            page.remove_listener("popup", _on_popup)
+
+            # If Xero opened a new window/popup, switch to it and maximize it
+            opened_page = popups_from_page[0] if popups_from_page else (
+                new_pages_from_context[0] if new_pages_from_context else None
+            )
+            if opened_page:
+                logger.info("New window opened by Xero after login click - switching to it")
+                try:
+                    await opened_page.wait_for_load_state("load", timeout=10000)
+                except Exception:
+                    pass
+                try:
+                    await opened_page.evaluate(
+                        "window.moveTo(0, 0); window.resizeTo(screen.availWidth, screen.availHeight);"
+                    )
+                except Exception:
+                    logger.debug("Could not resize new window via JS")
+                await opened_page.bring_to_front()
+                self.browser._page = opened_page
+                page = opened_page
+                logger.info("Switched to new window and maximized it")
             
             # Check for login errors before proceeding
             try:
