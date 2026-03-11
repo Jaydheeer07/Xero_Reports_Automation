@@ -17,11 +17,11 @@ logger = structlog.get_logger()
 async def setup_auth(api_key: str = Depends(verify_api_key), db: AsyncSession = Depends(get_db)):
     """
     Start manual login flow.
-    Opens a visible browser for manual Xero authentication.
-    
-    This endpoint opens a headed (visible) browser window.
-    The user must manually log into Xero and complete MFA.
-    After login, call POST /api/auth/complete to save the session.
+
+    Opens the Xero login page in a new Chrome tab via the DevTools HTTP API.
+    No CDP WebSocket connection is established, so Akamai cannot detect
+    automation during the login flow.  After the user logs in manually,
+    call POST /api/auth/complete to connect CDP and capture the session.
     """
     browser_manager = await BrowserManager.get_instance()
     auth_service = XeroAuthService(browser_manager)
@@ -34,41 +34,37 @@ async def setup_auth(api_key: str = Depends(verify_api_key), db: AsyncSession = 
 async def complete_auth(api_key: str = Depends(verify_api_key), db: AsyncSession = Depends(get_db)):
     """
     Complete authentication and save session.
-    Called after manual login to capture and store cookies.
-    
-    Captures cookies from the browser and stores them encrypted in the database.
+
+    Connects CDP to the Chrome instance (deferred from /setup to avoid
+    Akamai detection during login), verifies login, captures cookies,
+    and saves them to the database.  The browser stays in headed mode
+    so report automation runs in the same visible Chrome window.
     """
     browser_manager = await BrowserManager.get_instance()
     auth_service = XeroAuthService(browser_manager)
     session_service = XeroSessionService(db)
-    
-    # Complete the login and get cookies
+
+    # Complete the login — this also establishes the CDP connection
     result = await auth_service.complete_login()
-    
+
     if not result.get("success"):
         return result
-    
-    # Save cookies to database
+
+    # Save cookies to DB for persistence/recovery
     cookies = result.get("cookies", [])
     saved = await session_service.save_session(cookies)
-    
+
     if not saved:
         return {
             "success": False,
             "error": "Failed to save session to database"
         }
-    
-    # Switch browser to headless mode for automation
-    await browser_manager.restart(headless=True)
-    
-    # Restore session in headless browser
-    restore_result = await auth_service.restore_session(cookies)
-    
+
+    # NO headless restart — automation uses this same Chrome window
     return {
         "success": True,
-        "message": "Session saved and browser switched to headless mode",
+        "message": "Login confirmed. Ready for report automation.",
         "current_tenant": result.get("current_tenant"),
-        "session_restored": restore_result.get("success", False)
     }
 
 

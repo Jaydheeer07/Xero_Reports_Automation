@@ -24,6 +24,7 @@ import structlog
 import asyncio
 import os
 from datetime import datetime
+import httpx
 
 from app.config import get_settings
 
@@ -144,6 +145,31 @@ class BrowserManager:
             ])
 
         return launch_args
+
+    async def open_tab_via_devtools(self, url: str) -> dict:
+        """Open a new tab in Chrome via the DevTools HTTP API.
+
+        Uses the lightweight HTTP endpoint (not a CDP WebSocket) so no
+        automation scripts are injected into the page.  Akamai cannot
+        detect this because there is no persistent CDP client connection.
+
+        Args:
+            url: The URL to open in the new tab.
+
+        Returns:
+            Dict with tab metadata (id, url, title, etc.) from Chrome.
+        """
+        endpoint = f"http://localhost:{CHROME_DEBUG_PORT}/json/new?{url}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.put(endpoint)
+            if resp.status_code == 200:
+                tab_info = resp.json()
+                logger.info("Opened tab via DevTools HTTP API", url=url, tab_id=tab_info.get("id"))
+                return tab_info
+            else:
+                raise RuntimeError(
+                    f"Failed to open tab via DevTools HTTP API: status {resp.status_code}"
+                )
 
     async def initialize(self, headless: bool = True) -> None:
         """

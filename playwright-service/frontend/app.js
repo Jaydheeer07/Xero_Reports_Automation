@@ -77,22 +77,22 @@ async function handleLogin() {
   hideLoginInstruction();
   try {
     await API.post('/api/auth/setup', {});
-    btn.textContent = 'Complete Login';
+    btn.textContent = "I've Logged In";
     btn.onclick = handleCompleteLogin;
     btn.disabled = false;
-    showLoginInstruction('Log into Xero in the browser window, then click Complete Login.');
+    showLoginInstruction('A Xero login page has been opened in Chrome. Log in, then click "I\'ve Logged In".');
   } catch (e) {
     console.error('Setup failed:', e);
     btn.textContent = 'Login';
     btn.disabled = false;
-    showLoginInstruction('Failed to start login. Check the server is running and try again.', true);
+    showLoginInstruction('Failed to open Xero login. Check the server is running and try again.', true);
   }
 }
 
 async function handleCompleteLogin() {
   const btn = $('login-btn');
   btn.disabled = true;
-  btn.textContent = 'Saving session...';
+  btn.textContent = 'Verifying...';
   try {
     const result = await API.post('/api/auth/complete', {});
     if (result.success) {
@@ -100,16 +100,16 @@ async function handleCompleteLogin() {
       await loadAuthStatus();
       btn.onclick = handleLogin;
     } else {
-      btn.textContent = 'Complete Login';
+      btn.textContent = "I've Logged In";
       btn.disabled = false;
       showLoginInstruction('Login not detected yet — please finish logging in and try again.', true);
     }
   } catch (e) {
     console.error('Complete login failed:', e);
-    btn.textContent = 'Complete Login';
+    btn.textContent = "I've Logged In";
     btn.disabled = false;
     // Intentionally keep btn.onclick = handleCompleteLogin so user can retry without restarting
-    showLoginInstruction('Error saving session. Please try again.', true);
+    showLoginInstruction('Error verifying login. Please try again.', true);
   }
 }
 

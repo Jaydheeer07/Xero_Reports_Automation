@@ -46,109 +46,80 @@ class XeroAuthService:
         self.browser = browser_manager
     
     async def start_manual_login(self) -> dict:
-        """
-        Start the manual login flow.
-        
-        Opens a visible browser window for the user to log in manually.
-        This is required for initial setup and when MFA is needed.
-        
-        Returns:
-            Dict with status and instructions
+        """Open Xero login page in Chrome WITHOUT any CDP connection.
+
+        Uses the DevTools HTTP API to open a new tab, so no automation
+        scripts are injected and Akamai cannot detect automation.
+        The CDP WebSocket connection is deferred to complete_login().
         """
         try:
-            # Initialize browser in headed mode (visible)
-            await self.browser.initialize(headless=False)
-            
-            # Navigate to Xero login
-            await self.browser.goto(XERO_LOGIN_URL, wait_until="networkidle")
-            
-            logger.info("Manual login started - browser opened to Xero login page")
-            
-            current_url = await self.browser.get_url()
-            
+            tab_info = await self.browser.open_tab_via_devtools(XERO_LOGIN_URL)
+            logger.info("Manual login started - tab opened without CDP")
             return {
                 "success": True,
                 "status": "waiting_for_login",
-                "message": "Browser opened. Please log into Xero manually.",
-                "instructions": [
-                    "1. Enter your Xero email and password",
-                    "2. Complete MFA if prompted",
-                    "3. Wait for the dashboard to load",
-                    "4. Call POST /api/auth/complete to save the session"
-                ],
-                "current_url": current_url
+                "message": "Xero login page opened. Please log in manually.",
+                "tab_id": tab_info.get("id"),
             }
-            
         except Exception as e:
             import traceback
             error_msg = str(e) if str(e) else repr(e)
-            logger.error("Failed to start manual login", error=error_msg, traceback=traceback.format_exc())
+            logger.error("Failed to open login tab", error=error_msg, traceback=traceback.format_exc())
             return {
                 "success": False,
                 "status": "error",
                 "error": error_msg,
-                "details": traceback.format_exc()
             }
     
     async def complete_login(self) -> dict:
-        """
-        Complete the login flow and save cookies.
-        
-        Should be called after the user has manually logged in.
-        Captures cookies and verifies login was successful.
-        
-        Returns:
-            Dict with cookies and login status
+        """Connect CDP, verify login, and capture cookies.
+
+        Called after the user has manually logged in via the clean Chrome tab.
+        This method establishes the CDP connection (deferred from setup) so
+        that Akamai never sees automation during the login flow.
         """
         try:
+            # NOW connect CDP — user is already past Akamai's login protection
             if not self.browser.is_initialized:
-                return {
-                    "success": False,
-                    "error": "No browser page available. Call /api/auth/setup first."
-                }
-            
-            current_url = await self.browser.get_url()
-            
+                await self.browser.initialize(headless=False)
+
             # Check if we're on a Xero app page (logged in)
             is_logged_in = await self._check_logged_in()
-            
+
             if not is_logged_in:
-                # Take screenshot for debugging
                 screenshot = await self.browser.take_screenshot("login_incomplete")
+                current_url = await self.browser.get_url()
                 return {
                     "success": False,
-                    "error": "Login not complete. Please finish logging in.",
+                    "error": "Login not detected. Please finish logging in and try again.",
                     "current_url": current_url,
-                    "screenshot": screenshot
+                    "screenshot": screenshot,
                 }
-            
+
             # Get cookies
             cookies = await self.browser.get_cookies()
-            
+
             # Get current tenant info
             tenant_info = await self._get_current_tenant()
-            
+
             logger.info(
                 "Login completed successfully",
                 cookie_count=len(cookies),
-                tenant=tenant_info.get("name")
+                tenant=tenant_info.get("name"),
             )
-            
+
             return {
                 "success": True,
                 "message": "Login successful. Session captured.",
                 "cookies": cookies,
                 "current_tenant": tenant_info,
-                "current_url": current_url
             }
-            
+
         except Exception as e:
             logger.error("Failed to complete login", error=str(e))
-            screenshot = await self.browser.take_screenshot("login_error")
             return {
                 "success": False,
                 "error": str(e),
-                "screenshot": screenshot
             }
     
     async def restore_session(self, cookies: list[dict]) -> dict:
