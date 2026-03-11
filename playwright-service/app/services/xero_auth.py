@@ -567,11 +567,15 @@ class XeroAuthService:
                 except Exception:
                     pass
                 try:
-                    await opened_page.evaluate(
-                        "window.moveTo(0, 0); window.resizeTo(screen.availWidth, screen.availHeight);"
-                    )
+                    cdp = await opened_page.context.new_cdp_session(opened_page)
+                    result = await cdp.send("Browser.getWindowForTarget")
+                    await cdp.send("Browser.setWindowBounds", {
+                        "windowId": result["windowId"],
+                        "bounds": {"windowState": "maximized"},
+                    })
+                    await cdp.detach()
                 except Exception:
-                    logger.debug("Could not resize new window via JS")
+                    logger.debug("Could not maximize new window via CDP")
                 await opened_page.bring_to_front()
                 self.browser._page = opened_page
                 page = opened_page

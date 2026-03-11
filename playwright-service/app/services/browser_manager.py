@@ -57,6 +57,7 @@ class BrowserManager:
         self._is_initialized = False
         self._headless = settings.headless
         self._owns_browser = False  # False when connected via connect_over_cdp (tray owns Chrome)
+        self._owns_context = True   # False when reusing an existing CDP context (tray owns it)
         # Request-level lock: prevents concurrent API calls from fighting over the browser
         self._request_lock = asyncio.Lock()
 
@@ -179,14 +180,25 @@ class BrowserManager:
                             )
                         await asyncio.sleep(1.0)
 
-                # viewport=None: let Chrome window size dictate the viewport.
-                # Avoids outerWidth < innerWidth mismatch that Akamai flags as bot.
-                # Chrome is launched with --start-maximized so the window fills the screen.
-                self._context = await self._browser.new_context(
-                    viewport=None,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    accept_downloads=True,
-                )
+                # Reuse the existing Chrome context (the real user profile) rather than
+                # creating a new isolated/incognito context.  A fresh context has no Xero
+                # cookies or browsing history, which Akamai immediately flags as a bot.
+                # The existing context carries the real fingerprint that tray.py's Chrome
+                # has been building since launch.
+                existing_contexts = self._browser.contexts
+                if existing_contexts:
+                    self._context = existing_contexts[0]
+                    self._owns_context = False
+                    logger.info("Reusing existing Chrome context for login (avoids Akamai bot flag)")
+                else:
+                    # Fallback: create a new context if none exists yet
+                    self._context = await self._browser.new_context(
+                        viewport=None,
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                        accept_downloads=True,
+                    )
+                    self._owns_context = True
+                    logger.info("No existing context found, created new context")
 
                 # Belt-and-suspenders: remove any remaining CDP automation signals Akamai checks.
                 # Patchright already handles Runtime.enable at the protocol level, but these
@@ -272,6 +284,7 @@ class BrowserManager:
 
         self._is_initialized = False
         self._owns_browser = False
+        self._owns_context = True
         logger.info("Force cleanup completed")
 
     async def new_page(self) -> Page:
@@ -395,9 +408,9 @@ class BrowserManager:
                 await self._page.close()
                 self._page = None
 
-            if self._context:
+            if self._context and self._owns_context:
                 await self._context.close()
-                self._context = None
+            self._context = None
 
             if self._browser and self._owns_browser:
                 # Only close the browser process if we launched it.
