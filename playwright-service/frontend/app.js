@@ -164,11 +164,11 @@ async function loadRecentRuns() {
       return;
     }
     tbody.innerHTML = data.logs.map(log => {
-      const when = log.started_at ? new Date(log.started_at).toLocaleString() : '—';
+      const when = log.started_at ? formatCompactDate(new Date(log.started_at)) : '—';
       const statusClass = log.status === 'success' ? 'success' : log.status === 'failed' ? 'failed' : 'running';
       const name = log.file_name || '—';
       return `<tr>
-        <td>${name}</td>
+        <td title="${name}">${name}</td>
         <td><span class="badge ${statusClass}">${log.status}</span></td>
         <td>${when}</td>
       </tr>`;
@@ -238,6 +238,17 @@ function startPolling() {
 }
 
 // --- UI helpers ---
+function formatCompactDate(date) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const month = months[date.getMonth()];
+  const day = date.getDate();
+  let hours = date.getHours();
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${month} ${day}, ${hours}:${minutes} ${ampm}`;
+}
+
 let renderedSteps = 0;
 
 function showProgress() {

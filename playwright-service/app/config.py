@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # CORS - comma-separated list of allowed origins (override in .env for production)
     allowed_origins: str = "http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000"
     
+    # OneDrive
+    one_drive_folder_origin: str | None = None
+
     # Directories
     download_dir: str = "/app/downloads"
     screenshot_dir: str = "/app/screenshots"

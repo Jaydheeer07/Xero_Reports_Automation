@@ -341,8 +341,9 @@ async def download_consolidated_report(
     if downloaded_files:
         logger.info("Step 3/3: Consolidating reports...")
         try:
-            month_year = f"{calendar.month_name[request.month]}_{request.year}"
-            consolidated_filename = f"Consolidated_BAS_Report_{month_year}.xlsx"
+            import re
+            safe_name = re.sub(r'[<>:"/\\|?*]', '', request.tenant_name)
+            consolidated_filename = f"{safe_name} - {calendar.month_name[request.month]} {request.year} IAS.xlsx"
 
             consolidated_path = file_manager.consolidate_excel_files(
                 file_paths=downloaded_files,
@@ -620,11 +621,13 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                 errors.append(f"Payroll Summary: {payroll_result.get('error')}")
 
             consolidated_file = None
+            file_manager = None
             if downloaded_files:
                 _update_job(job_id, "Consolidating reports into single Excel file...")
                 file_manager = get_file_manager()
-                month_year = f"{calendar.month_name[request.month]}_{request.year}"
-                consolidated_filename = f"Consolidated_BAS_Report_{month_year}.xlsx"
+                import re
+                safe_name = re.sub(r'[<>:"/\\|?*]', '', request.tenant_name)
+                consolidated_filename = f"{safe_name} - {calendar.month_name[request.month]} {request.year} IAS.xlsx"
                 consolidated_path = file_manager.consolidate_excel_files(
                     file_paths=downloaded_files,
                     output_filename=consolidated_filename,
@@ -632,10 +635,56 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                 )
                 consolidated_file = {"file_path": consolidated_path, "file_name": consolidated_filename}
 
-            # Log to Supabase
+            # Look up client for OneDrive folder and logging
             from sqlalchemy import select as _select
             client_result = await db.execute(_select(Client).where(Client.tenant_id == request.tenant_id))
             client = client_result.scalar_one_or_none()
+
+            # Step 6: Copy to OneDrive (if configured)
+            onedrive_path = None
+            if consolidated_file and settings.one_drive_folder_origin and client and client.onedrive_folder:
+                try:
+                    _update_job(job_id, "Copying to OneDrive...")
+                    if not file_manager:
+                        file_manager = get_file_manager()
+                    onedrive_path = file_manager.copy_to_onedrive(
+                        source_path=consolidated_file["file_path"],
+                        onedrive_origin=settings.one_drive_folder_origin,
+                        client_onedrive_folder=client.onedrive_folder,
+                    )
+                    consolidated_file["onedrive_path"] = onedrive_path
+                    _update_job(job_id, f"Saved to OneDrive: {os.path.basename(onedrive_path)}")
+                except Exception as e:
+                    logger.warning("OneDrive copy failed (non-fatal)", error=str(e))
+                    errors.append(f"OneDrive copy failed: {str(e)}")
+            elif consolidated_file:
+                if not settings.one_drive_folder_origin:
+                    logger.info("OneDrive skipped: ONE_DRIVE_FOLDER_ORIGIN not configured")
+                elif not client or not client.onedrive_folder:
+                    logger.info("OneDrive skipped: client has no onedrive_folder set",
+                                client_name=request.tenant_name)
+
+            # Step 7: Cleanup individual files (only if OneDrive copy succeeded)
+            if onedrive_path:
+                _update_job(job_id, "Cleaning up temporary files...")
+                if not file_manager:
+                    file_manager = get_file_manager()
+                files_to_delete = []
+                if activity_result.get("success") and activity_result.get("file_path"):
+                    files_to_delete.append(activity_result["file_path"])
+                if payroll_result.get("success") and payroll_result.get("file_path"):
+                    files_to_delete.append(payroll_result["file_path"])
+                if consolidated_file and consolidated_file.get("file_path"):
+                    files_to_delete.append(consolidated_file["file_path"])
+                if files_to_delete:
+                    cleanup_result = file_manager.cleanup_job_files(files_to_delete)
+                    logger.info("Cleanup complete",
+                                deleted=cleanup_result["deleted"],
+                                errors=cleanup_result["errors"])
+                    if cleanup_result["errors"]:
+                        errors.extend([f"Cleanup: {e}" for e in cleanup_result["errors"]])
+
+            # Log to Supabase
             await _log_download(db, client.id if client else None, "activity_statement", activity_result)
             await _log_download(db, client.id if client else None, "payroll_activity_summary", payroll_result)
 
@@ -651,6 +700,26 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
 
             _finish_job(job_id, success, result)
             _update_job(job_id, f"Done — {consolidated_file['file_name']}" if consolidated_file else "Done with errors")
+
+            # Update consolidated download log with OneDrive info
+            if onedrive_path:
+                consolidated_log_result = {
+                    "success": True,
+                    "file_path": onedrive_path,
+                    "file_name": consolidated_file["file_name"] if consolidated_file else None,
+                }
+                consolidated_log = await db.execute(
+                    _select(DownloadLog)
+                    .where(DownloadLog.client_id == (client.id if client else None))
+                    .where(DownloadLog.report_type == "consolidated_report")
+                    .order_by(DownloadLog.started_at.desc())
+                    .limit(1)
+                )
+                log_entry = consolidated_log.scalar_one_or_none()
+                if log_entry:
+                    log_entry.uploaded_to_onedrive = True
+                    log_entry.onedrive_path = onedrive_path
+                    await db.commit()
 
         except Exception as e:
             logger.error("Background job failed", job_id=job_id, error=str(e))

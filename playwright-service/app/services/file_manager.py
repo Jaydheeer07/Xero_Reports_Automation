@@ -191,6 +191,70 @@ class FileManager:
         
         return deleted
     
+    def copy_to_onedrive(
+        self,
+        source_path: str,
+        onedrive_origin: str,
+        client_onedrive_folder: str,
+    ) -> str:
+        """
+        Copy a file to the client's OneDrive synced folder.
+
+        Args:
+            source_path: Absolute path to the file to copy
+            onedrive_origin: Base OneDrive path (from settings)
+            client_onedrive_folder: Client-specific subfolder (from Client.onedrive_folder)
+
+        Returns:
+            Destination path where the file was copied
+
+        Raises:
+            FileNotFoundError: if source file doesn't exist
+            OSError: if target directory cannot be created or copy fails
+        """
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(f"Source file not found: {source_path}")
+
+        target_dir = os.path.join(onedrive_origin, client_onedrive_folder)
+        os.makedirs(target_dir, exist_ok=True)
+
+        filename = os.path.basename(source_path)
+        target_path = os.path.join(target_dir, filename)
+
+        shutil.copy2(source_path, target_path)
+        logger.info("Copied to OneDrive",
+                     source=source_path,
+                     target=target_path)
+
+        return target_path
+
+    def cleanup_job_files(self, file_paths: List[str]) -> dict:
+        """
+        Delete a list of files (individual downloads + consolidated file).
+
+        Args:
+            file_paths: List of absolute file paths to delete
+
+        Returns:
+            Dict with 'deleted' count and 'errors' list
+        """
+        deleted = 0
+        cleanup_errors = []
+
+        for path in file_paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                    deleted += 1
+                    logger.info("Cleaned up file", path=path)
+                else:
+                    logger.debug("File already gone, skipping", path=path)
+            except Exception as e:
+                logger.warning("Failed to delete file", path=path, error=str(e))
+                cleanup_errors.append(f"{os.path.basename(path)}: {str(e)}")
+
+        return {"deleted": deleted, "errors": cleanup_errors}
+
     def validate_excel_file(self, filepath: str) -> bool:
         """
         Validate that a file appears to be a valid Excel file.
