@@ -78,6 +78,9 @@ CREATE TRIGGER update_xero_sessions_updated_at
 -- Add index for tenant_shortcode
 CREATE INDEX IF NOT EXISTS idx_clients_shortcode ON clients(tenant_shortcode);
 
+-- Add Asana task ID column (run this on existing databases)
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS asana_task_id VARCHAR(255);
+
 COMMENT ON TABLE clients IS 'Xero client tenants to process for report downloads';
 COMMENT ON TABLE xero_sessions IS 'Encrypted Xero session cookies (single row)';
 COMMENT ON TABLE download_logs IS 'Audit log of all report download attempts';

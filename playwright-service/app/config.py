@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     
     # Optional: n8n webhook for notifications
     n8n_webhook_url: str | None = None
+
+    # Asana integration
+    asana_api_key: str = ""
+    asana_reassignee_gid: str = ""       # GID of person to reassign task to after export
+    asana_reassignee_name: str = ""      # Display name used in the comment (e.g., "Maria")
+    asana_ready_to_export_section_gid: str = ""  # Section GID for "Ready to Export"
+
+    # Email fallback (sent when Asana update fails after retries)
+    smtp_host: str = "smtp.office365.com"
+    smtp_port: int = 587
+    smtp_email: str = ""
+    smtp_password: str = ""
+    smtp_fallback_email: str = ""        # Recipient for fallback notifications
     
     # Xero credentials for automated login
     xero_email: str | None = None

@@ -684,6 +684,28 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                     if cleanup_result["errors"]:
                         errors.extend([f"Cleanup: {e}" for e in cleanup_result["errors"]])
 
+            # Step 8: Update Asana task (if client has a task ID configured)
+            asana_updated = False
+            asana_error = None
+            if onedrive_path and client and client.asana_task_id and settings.asana_api_key:
+                _update_job(job_id, "Updating Asana task...")
+                from app.services.asana_service import get_asana_service
+                asana_service = get_asana_service()
+                asana_result = await asana_service.update_task_after_export(
+                    task_id_or_url=client.asana_task_id,
+                    onedrive_link=onedrive_path,
+                )
+                asana_updated = asana_result["success"]
+                asana_error = asana_result.get("error")
+                if not asana_updated:
+                    logger.warning("Asana update failed, sending fallback email", error=asana_error)
+                    await asana_service.send_fallback_email(onedrive_path, asana_error or "Unknown error")
+                    errors.append(f"Asana update failed: {asana_error}")
+                else:
+                    _update_job(job_id, "Asana task updated")
+            elif client and client.asana_task_id and not settings.asana_api_key:
+                logger.info("Asana update skipped: ASANA_API_KEY not configured")
+
             # Log to Supabase
             await _log_download(db, client.id if client else None, "activity_statement", activity_result)
             await _log_download(db, client.id if client else None, "payroll_activity_summary", payroll_result)
@@ -694,6 +716,8 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                 "errors": errors,
                 "activity_statement": activity_result,
                 "payroll_summary": payroll_result,
+                "asana_updated": asana_updated,
+                "asana_error": asana_error,
             }
             if errors:
                 result["error"] = "; ".join(errors)
