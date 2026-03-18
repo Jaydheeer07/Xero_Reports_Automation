@@ -43,7 +43,6 @@ class Settings(BaseSettings):
     # Asana integration
     asana_api_key: str = ""
     asana_reassignee_gid: str = ""       # GID of person to reassign task to after export
-    asana_reassignee_name: str = ""      # Display name used in the comment (e.g., "Maria")
     asana_ready_to_export_section_gid: str = ""  # Section GID for "Ready to Export"
 
     # Email fallback (sent when Asana update fails after retries)

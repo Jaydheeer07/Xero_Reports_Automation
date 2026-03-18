@@ -91,17 +91,21 @@ class AsanaService:
         else:
             log.warning("ASANA_READY_TO_EXPORT_SECTION_GID not set — skipping section move")
 
-        # 3. Add comment
-        comment = (
-            f"Hi Ms. {settings.asana_reassignee_name}, files has been exported to the link below:\n"
+        # 3. Add comment with @mention so the reassignee is notified
+        # Asana rich-text format: <a data-asana-gid="..."/> renders as a tagged @mention
+        comment_html = (
+            f"<body>"
+            f"Hi Ms. <a data-asana-gid=\"{settings.asana_reassignee_gid}\"/>, "
+            f"files has been exported to the link below:\n"
             f"{onedrive_link}\n\n"
             f"Thanks!"
+            f"</body>"
         )
-        log.info("Adding comment to Asana task")
+        log.info("Adding @mention comment to Asana task")
         result = await self._api_call_with_retry(
             method="POST",
             url=f"{ASANA_API_BASE}/tasks/{task_gid}/stories",
-            json={"data": {"text": comment}},
+            json={"data": {"html_text": comment_html}},
         )
         if not result["success"]:
             return result
@@ -147,7 +151,7 @@ class AsanaService:
                 f"  - Change assignee to {settings.asana_reassignee_name}\n"
                 f"  - Set due date to nearest Friday (or Monday if today is Friday)\n"
                 f"  - Move task to 'Ready to Export' section\n"
-                f"  - Add comment with the OneDrive link above"
+                f"  - Add comment with the OneDrive link above and @mention the reassignee (GID: {settings.asana_reassignee_gid})"
             )
             msg.attach(MIMEText(body, "plain"))
 
