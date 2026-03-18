@@ -616,7 +616,7 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
 
             if payroll_result.get("success"):
                 downloaded_files.append(payroll_result["file_path"])
-                sheet_names.append("Payroll_Summary")
+                sheet_names.append("Payroll_Activity_Summary")
             else:
                 errors.append(f"Payroll Summary: {payroll_result.get('error')}")
 
