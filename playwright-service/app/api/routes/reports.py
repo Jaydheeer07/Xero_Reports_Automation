@@ -29,6 +29,13 @@ settings = get_settings()
 import uuid
 from datetime import datetime, timedelta
 
+
+def _get_australian_fy_year() -> int:
+    """Return the current Australian fiscal year (e.g. 2026 for July 2025 – June 2026)."""
+    now = datetime.now()
+    return now.year + 1 if now.month >= 7 else now.year
+
+
 # --- In-memory background job registry ---
 # Stores job state during execution. Jobs auto-expire after 1 hour.
 # Supabase download_logs is the permanent record; this dict is only for polling.
@@ -691,9 +698,14 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                 _update_job(job_id, "Updating Asana task...")
                 from app.services.asana_service import get_asana_service
                 asana_service = get_asana_service()
+                if client.sharepoint_folder_url:
+                    fy_year = _get_australian_fy_year()
+                    asana_link = f"{client.sharepoint_folder_url}/FY%20{fy_year}"
+                else:
+                    asana_link = onedrive_path
                 asana_result = await asana_service.update_task_after_export(
                     task_id_or_url=client.asana_task_id,
-                    onedrive_link=onedrive_path,
+                    onedrive_link=asana_link,
                 )
                 asana_updated = asana_result["success"]
                 asana_error = asana_result.get("error")

@@ -40,6 +40,7 @@ async def list_clients(
                 "tenant_shortcode": c.tenant_shortcode,
                 "is_active": c.is_active,
                 "onedrive_folder": c.onedrive_folder,
+                "sharepoint_folder_url": c.sharepoint_folder_url,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
                 "updated_at": c.updated_at.isoformat() if c.updated_at else None,
             }
@@ -68,6 +69,7 @@ async def get_client(
         "tenant_shortcode": client.tenant_shortcode,
         "is_active": client.is_active,
         "onedrive_folder": client.onedrive_folder,
+        "sharepoint_folder_url": client.sharepoint_folder_url,
         "created_at": client.created_at.isoformat() if client.created_at else None,
         "updated_at": client.updated_at.isoformat() if client.updated_at else None,
     }
@@ -95,6 +97,7 @@ async def create_client(
         tenant_name=request.tenant_name,
         tenant_shortcode=request.tenant_shortcode,
         onedrive_folder=request.onedrive_folder,
+        sharepoint_folder_url=request.sharepoint_folder_url,
         is_active=request.is_active
     )
     
@@ -114,6 +117,7 @@ async def create_client(
             "tenant_shortcode": client.tenant_shortcode,
             "is_active": client.is_active,
             "onedrive_folder": client.onedrive_folder,
+            "sharepoint_folder_url": client.sharepoint_folder_url,
         }
     }
 
@@ -139,6 +143,8 @@ async def update_client(
         client.tenant_shortcode = request.tenant_shortcode
     if request.onedrive_folder is not None:
         client.onedrive_folder = request.onedrive_folder
+    if request.sharepoint_folder_url is not None:
+        client.sharepoint_folder_url = request.sharepoint_folder_url
     if request.is_active is not None:
         client.is_active = request.is_active
     
@@ -157,6 +163,7 @@ async def update_client(
             "tenant_shortcode": client.tenant_shortcode,
             "is_active": client.is_active,
             "onedrive_folder": client.onedrive_folder,
+            "sharepoint_folder_url": client.sharepoint_folder_url,
         }
     }
 
