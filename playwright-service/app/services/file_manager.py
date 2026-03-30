@@ -10,6 +10,7 @@ Provides utilities for:
 
 import os
 import shutil
+import urllib.parse
 from datetime import datetime
 from typing import Optional, List
 import structlog
@@ -227,6 +228,49 @@ class FileManager:
                      target=target_path)
 
         return target_path
+
+    def build_sharepoint_url(
+        self,
+        onedrive_folder: str,
+        fy_year: int,
+        local_prefix: str,
+        sharepoint_base_url: str,
+    ) -> str | None:
+        """
+        Derive a SharePoint web URL from an OneDrive folder path.
+
+        Strips the local prefix from onedrive_folder, URL-encodes each remaining
+        path segment, prepends the SharePoint base URL, and appends the FY folder.
+
+        Example:
+            onedrive_folder  = "Dexter's files - Bookkeeping & Accounting\\Marsill Pty Ltd\\IAS"
+            local_prefix     = "Dexter's files - Bookkeeping & Accounting"
+            sharepoint_base  = "https://.../Bookkeeping%20%26%20Accounting"
+            fy_year          = 2026
+            → "https://.../Bookkeeping%20%26%20Accounting/Marsill%20Pty%20Ltd/IAS/FY%202026"
+
+        Returns None if sharepoint_base_url is not configured.
+        """
+        if not sharepoint_base_url:
+            return None
+
+        # Strip local prefix and any leading path separator
+        if onedrive_folder.startswith(local_prefix):
+            relative = onedrive_folder[len(local_prefix):].lstrip('\\/')
+        else:
+            relative = onedrive_folder
+
+        # Convert backslashes to forward slashes and URL-encode each segment
+        encoded_path = '/'.join(
+            urllib.parse.quote(seg, safe='')
+            for seg in relative.replace('\\', '/').split('/')
+            if seg
+        )
+
+        base = sharepoint_base_url.rstrip('/')
+        if encoded_path:
+            return f"{base}/{encoded_path}/FY%20{fy_year}"
+        return f"{base}/FY%20{fy_year}"
 
     def cleanup_job_files(self, file_paths: List[str]) -> dict:
         """

@@ -654,10 +654,12 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                     _update_job(job_id, "Copying to OneDrive...")
                     if not file_manager:
                         file_manager = get_file_manager()
+                    fy_year = _get_australian_fy_year()
+                    onedrive_folder_with_fy = os.path.join(client.onedrive_folder, f"FY {fy_year}")
                     onedrive_path = file_manager.copy_to_onedrive(
                         source_path=consolidated_file["file_path"],
                         onedrive_origin=settings.one_drive_folder_origin,
-                        client_onedrive_folder=client.onedrive_folder,
+                        client_onedrive_folder=onedrive_folder_with_fy,
                     )
                     consolidated_file["onedrive_path"] = onedrive_path
                     _update_job(job_id, f"Saved to OneDrive: {os.path.basename(onedrive_path)}")
@@ -698,11 +700,15 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                 _update_job(job_id, "Updating Asana task...")
                 from app.services.asana_service import get_asana_service
                 asana_service = get_asana_service()
-                if client.sharepoint_folder_url:
-                    fy_year = _get_australian_fy_year()
-                    asana_link = f"{client.sharepoint_folder_url}/FY%20{fy_year}"
-                else:
-                    asana_link = onedrive_path
+                asana_link = (
+                    file_manager.build_sharepoint_url(
+                        onedrive_folder=client.onedrive_folder,
+                        fy_year=fy_year,
+                        local_prefix=settings.onedrive_local_prefix,
+                        sharepoint_base_url=settings.sharepoint_base_url,
+                    )
+                    or onedrive_path
+                )
                 asana_result = await asana_service.update_task_after_export(
                     task_id_or_url=client.asana_task_id,
                     onedrive_link=asana_link,

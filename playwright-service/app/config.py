@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     
     # OneDrive
     one_drive_folder_origin: str | None = None
+    # SharePoint URL derivation: strip this local prefix from onedrive_folder, then
+    # prepend sharepoint_base_url and append /FY%20{year} to build the Asana comment link.
+    onedrive_local_prefix: str = "Dexter's files - Bookkeeping & Accounting"
+    sharepoint_base_url: str = ""
 
     # Directories
     download_dir: str = "/app/downloads"

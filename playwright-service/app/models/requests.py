@@ -68,8 +68,7 @@ class ClientCreate(BaseModel):
     tenant_id: str = Field(..., description="Xero tenant ID")
     tenant_name: str = Field(..., description="Xero tenant/organisation name")
     tenant_shortcode: Optional[str] = Field(None, description="Tenant shortcode for URL-based switching (e.g., 'mkK34')")
-    onedrive_folder: Optional[str] = Field(None, description="OneDrive folder path")
-    sharepoint_folder_url: Optional[str] = Field(None, description="SharePoint web URL for the client's report folder (without FY subfolder). Used in Asana comments.")
+    onedrive_folder: Optional[str] = Field(None, description="OneDrive folder path (without FY subfolder — FY is appended dynamically at runtime)")
     is_active: bool = Field(True, description="Whether client is active")
 
 
@@ -78,5 +77,4 @@ class ClientUpdate(BaseModel):
     tenant_name: Optional[str] = None
     tenant_shortcode: Optional[str] = None
     onedrive_folder: Optional[str] = None
-    sharepoint_folder_url: Optional[str] = None
     is_active: Optional[bool] = None

@@ -13,7 +13,6 @@ class Client(Base):
     tenant_shortcode = Column(String(50), unique=True, index=True)  # URL shortcode for fast switching (e.g., "mkK34")
     is_active = Column(Boolean, default=True, index=True)
     onedrive_folder = Column(String(500))
-    sharepoint_folder_url = Column(String(1000))  # SharePoint web URL (without FY subfolder) for Asana comments
     asana_task_id = Column(String(255))  # Asana task GID or URL for this client's IAS task
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
