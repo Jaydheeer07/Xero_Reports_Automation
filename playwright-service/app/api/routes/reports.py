@@ -700,18 +700,21 @@ async def _run_consolidated_job(job_id: str, request: ConsolidatedReportRequest)
                 _update_job(job_id, "Updating Asana task...")
                 from app.services.asana_service import get_asana_service
                 asana_service = get_asana_service()
+                consolidated_filename = consolidated_file["file_name"] if consolidated_file else None
                 asana_link = (
                     file_manager.build_sharepoint_url(
                         onedrive_folder=client.onedrive_folder,
                         fy_year=fy_year,
                         local_prefix=settings.onedrive_local_prefix,
                         sharepoint_base_url=settings.sharepoint_base_url,
+                        filename=consolidated_filename,
                     )
                     or onedrive_path
                 )
                 asana_result = await asana_service.update_task_after_export(
                     task_id_or_url=client.asana_task_id,
                     onedrive_link=asana_link,
+                    filename=consolidated_filename,
                 )
                 asana_updated = asana_result["success"]
                 asana_error = asana_result.get("error")

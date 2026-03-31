@@ -46,6 +46,7 @@ class AsanaService:
         self,
         task_id_or_url: str,
         onedrive_link: str,
+        filename: str | None = None,
     ) -> dict:
         """
         Update an Asana task after a successful report export.
@@ -93,11 +94,17 @@ class AsanaService:
 
         # 3. Add comment with @mention so the reassignee is notified
         # Asana rich-text format: <a data-asana-gid="..."/> renders as a tagged @mention
+        # When filename is available and link is a URL, render as clickable hyperlink
+        if filename and onedrive_link.startswith("http"):
+            link_html = f'<a href="{onedrive_link}">{filename}</a>'
+        else:
+            link_html = onedrive_link
+
         comment_html = (
             f"<body>"
             f"Hi Ms. <a data-asana-gid=\"{settings.asana_reassignee_gid}\"/>, "
             f"files has been exported to the link below:\n"
-            f"{onedrive_link}\n\n"
+            f"{link_html}\n\n"
             f"Thanks!"
             f"</body>"
         )

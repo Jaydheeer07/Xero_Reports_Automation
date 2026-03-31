@@ -235,6 +235,7 @@ class FileManager:
         fy_year: int,
         local_prefix: str,
         sharepoint_base_url: str,
+        filename: str | None = None,
     ) -> str | None:
         """
         Derive a SharePoint web URL from an OneDrive folder path.
@@ -269,8 +270,13 @@ class FileManager:
 
         base = sharepoint_base_url.rstrip('/')
         if encoded_path:
-            return f"{base}/{encoded_path}/FY%20{fy_year}"
-        return f"{base}/FY%20{fy_year}"
+            url = f"{base}/{encoded_path}/FY%20{fy_year}"
+        else:
+            url = f"{base}/FY%20{fy_year}"
+
+        if filename:
+            url = f"{url}/{urllib.parse.quote(filename, safe='')}"
+        return url
 
     def cleanup_job_files(self, file_paths: List[str]) -> dict:
         """
